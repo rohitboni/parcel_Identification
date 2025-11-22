@@ -1,0 +1,6 @@
+data/
+venv/
+__pycache__/
+backend/tile_server/cache/
+backend/cache/
+backend/tile_server/test.py

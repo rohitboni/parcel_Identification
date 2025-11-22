@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Parcel Raster Tiles</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body style="margin:0; padding:0;">
+  <div id="map" style="width: 100vw; height: 100vh;"></div>
+
+ <!--  <script>
+    const map = L.map("map").setView([13.1, 79.28], 12); // center on Vellore
+
+    // Add OSM basemap
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "© OpenStreetMap contributors"
+    }).addTo(map);
+
+    // Add your parcel raster tiles
+    L.tileLayer("http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png", {
+      maxZoom: 17,
+      minZoom: 10,
+      tileSize: 256,
+      opacity: 0.8
+    }).addTo(map);
+  </script>
+</body>
+</html> -->
+
+
+<script>
+  const map = L.map("map").setView([13.1, 79.28], 12);
+
+  // OSM Basemap
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "© OpenStreetMap contributors"
+  }).addTo(map);
+
+  // Parcel Raster Tiles
+  L.tileLayer("http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png", {
+    maxZoom: 17,
+    minZoom: 10,
+    tileSize: 256,
+    opacity: 0.85
+  }).addTo(map);
+
+  let highlightLayer = null;
+
+  // CLICK HANDLER
+  map.on("click", async function (e) {
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+
+    console.log("Clicked:", lat, lon);
+
+    // Call backend identify API
+    const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (data.status !== "ok") {
+      alert("No parcel found here.");
+      return;
+    }
+
+    // Remove old highlighted parcel if any
+    if (highlightLayer) {
+      map.removeLayer(highlightLayer);
+    }
+
+    // Add highlighted parcel geometry
+    highlightLayer = L.geoJSON(data.geometry, {
+      style: {
+        color: "yellow",
+        weight: 3,
+        fillColor: "orange",
+        fillOpacity: 0.2
+      }
+    }).addTo(map);
+
+    // Zoom to parcel
+    map.fitBounds(highlightLayer.getBounds(), { maxZoom: 17 });
+
+    alert(JSON.stringify({
+    attributes: data.attributes,
+    coordinates: data.coordinates
+    }, null, 2));
+
+
+  });
+</script>
