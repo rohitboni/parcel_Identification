@@ -12,6 +12,8 @@ async def get_raster_tile(z: int, x: int, y: int):
     Returns a raster tile at the given z/x/y indices.
     Checks cache first; if not found, generates and caches.
     """
+    if z < 15 or z > 18:
+        raise HTTPException(status_code=400, detail="z out of allowed range")
     # Step 1: Try cache
     cached_tile = get_tile_from_cache(z, x, y)
     if cached_tile:
