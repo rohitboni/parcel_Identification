@@ -1,6 +1,7 @@
 # backend/tile_server/utils/generate_tile.py
 
 import io
+import os
 import numpy as np
 from PIL import Image, ImageDraw
 from shapely.wkb import loads as wkb_loads
@@ -14,11 +15,11 @@ from .tile_utils import tile_xyz_to_bounds
 # Database config
 # ------------------------------
 DB_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 5432,
-    "database": "parcels_db",
-    "user": "postgres",
-    "password": "postgres"
+    "host": os.environ.get("DB_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("DB_PORT", "5432")),
+    "database": os.environ.get("DB_NAME", "parcels_db"),
+    "user": os.environ.get("DB_USER", "postgres"),
+    "password": os.environ.get("DB_PASSWORD", "postgres")
 }
 
 # ------------------------------

@@ -1,3 +1,4 @@
+import os
 import uuid
 import geopandas as gpd
 import psycopg2
@@ -6,13 +7,13 @@ from shapely.geometry import MultiPolygon
 # ------------------------------
 # CONFIG
 # ------------------------------
-SHAPEFILE_PATH = "data/vellore/vellore_cad.shp"
+SHAPEFILE_PATH = os.environ.get("SHAPEFILE_PATH", "data/vellore/vellore_cad.shp")
 DB_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 5432,
-    "database": "parcels_db",
-    "user": "postgres",
-    "password": "postgres"
+    "host": os.environ.get("DB_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("DB_PORT", "5432")),
+    "database": os.environ.get("DB_NAME", "parcels_db"),
+    "user": os.environ.get("DB_USER", "postgres"),
+    "password": os.environ.get("DB_PASSWORD", "postgres")
 }
 
 # ------------------------------
