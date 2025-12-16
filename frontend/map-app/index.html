@@ -1,98 +1,163 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Parcel Raster Tiles</title>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <title>Parcel Identification - Cadastral Mapping</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body, html, #map { margin:0; padding:0; height:100%; }
+    .info { padding: 10px; background: white; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
+    .info b { display: block; margin-bottom: 5px; }
+    .place-label { 
+      font-weight: bold; 
+      text-shadow: -1px -1px 0 white, 1px -1px 0 white, -1px 1px 0 white, 1px 1px 0 white;
+      pointer-events: none;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+    .place-label.district { font-size: 14px; color: #1a1a1a; }
+    .place-label.village { font-size: 11px; color: #333; }
+  </style>
 </head>
-<body style="margin:0; padding:0;">
-  <div id="map" style="width: 100vw; height: 100vh;"></div>
-
- <!--  <script>
-    const map = L.map("map").setView([13.1, 79.28], 12); // center on Vellore
-
-    // Add OSM basemap
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: "© OpenStreetMap contributors"
+<body>
+  <div id="map"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([13.1, 79.28], 12);
+    
+    // Basemap - Esri World Imagery
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Esri',
+      maxZoom: 19
     }).addTo(map);
-
-    // Add your parcel raster tiles
-    L.tileLayer("http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png", {
-      maxZoom: 17,
-      minZoom: 10,
-      tileSize: 256,
-      opacity: 0.8
+    
+    // Parcel Overlay Tiles
+    L.tileLayer('http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png', {
+      minZoom: 15,
+      maxZoom: 18,
+      opacity: 0.9,
+      attribution: 'Parcel Boundaries'
     }).addTo(map);
+    
+    // Info Control Panel
+    const info = L.control({position: 'topright'});
+    info.onAdd = function() {
+      this._div = L.DomUtil.create('div', 'info');
+      this._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/>Click on a parcel to identify';
+      return this._div;
+    };
+    info.addTo(map);
+    
+    // Update info on zoom
+    map.on('zoomend', function() {
+      info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/>Click on a parcel to identify';
+    });
+    
+    // Parcel highlight layer
+    let highlightLayer = null;
+    
+    // Place labels layer
+    let placeLabelsLayer = L.layerGroup().addTo(map);
+    
+    // Function to create a text label marker
+    function createTextLabel(name, lat, lon, type) {
+      const labelHtml = '<div class="place-label ' + type + '">' + name + '</div>';
+      
+      return L.marker([lat, lon], {
+        icon: L.divIcon({
+          html: labelHtml,
+          className: 'place-label-container',
+          iconSize: null,
+          iconAnchor: [0, 0]
+        }),
+        zIndexOffset: 1000,
+        interactive: false
+      });
+    }
+    
+    // Function to load and display place labels
+    async function loadPlaceLabels() {
+      const zoom = map.getZoom();
+      
+      try {
+        const url = `http://127.0.0.1:8000/api/place-labels?zoom=${zoom}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        // Clear existing labels
+        placeLabelsLayer.clearLayers();
+        
+        // Add new labels
+        if (data.labels && data.labels.length > 0) {
+          data.labels.forEach(label => {
+            const marker = createTextLabel(label.name, label.lat, label.lon, label.type);
+            placeLabelsLayer.addLayer(marker);
+          });
+        }
+      } catch (error) {
+        console.error('Error loading place labels:', error);
+      }
+    }
+    
+    // Load labels on map move/zoom
+    map.on('moveend', loadPlaceLabels);
+    map.on('zoomend', function() {
+      loadPlaceLabels();
+      info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/>Click on a parcel to identify';
+    });
+    
+    // Initial load
+    loadPlaceLabels();
+    
+    // Click handler for parcel identification
+    map.on('click', async function(e) {
+      const lat = e.latlng.lat;
+      const lon = e.latlng.lng;
+      
+      console.log('Clicked:', lat, lon);
+      
+      // Call backend identify API
+      try {
+        const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data.status !== 'ok') {
+          info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/><span style="color: red;">No parcel found</span>';
+          return;
+        }
+        
+        // Remove old highlighted parcel if any
+        if (highlightLayer) {
+          map.removeLayer(highlightLayer);
+        }
+        
+        // Add highlighted parcel geometry
+        highlightLayer = L.geoJSON(data.geometry, {
+          style: {
+            color: 'yellow',
+            weight: 3,
+            fillColor: 'orange',
+            fillOpacity: 0.3
+          }
+        }).addTo(map);
+        
+        // Zoom to parcel
+        map.fitBounds(highlightLayer.getBounds(), { maxZoom: 17 });
+        
+        // Update info panel with parcel details
+        const attrs = data.attributes;
+        info._div.innerHTML = '<b>Parcel Information</b>' +
+          '<br/>Survey No: ' + (attrs.survey_num || 'N/A') +
+          '<br/>District: ' + (attrs.district_name || attrs.district_code || 'N/A') +
+          '<br/>Village: ' + (attrs.village_name || 'N/A') +
+          '<br/>Zoom: ' + map.getZoom();
+        
+      } catch (error) {
+        console.error('Error identifying parcel:', error);
+        info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/><span style="color: red;">Error: ' + error.message + '</span>';
+      }
+    });
   </script>
 </body>
-</html> -->
-
-
-<script>
-  const map = L.map("map").setView([13.1, 79.28], 12);
-
-  // OSM Basemap
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
-    attribution: "© OpenStreetMap contributors"
-  }).addTo(map);
-
-  // Parcel Raster Tiles
-  L.tileLayer("http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png", {
-    maxZoom: 18,
-    minZoom: 15,
-    tileSize: 256,
-    opacity: 0.85
-  }).addTo(map);
-
-  let highlightLayer = null;
-
-  // CLICK HANDLER
-  map.on("click", async function (e) {
-    const lat = e.latlng.lat;
-    const lon = e.latlng.lng;
-
-    console.log("Clicked:", lat, lon);
-
-    // Call backend identify API
-    const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.status !== "ok") {
-      alert("No parcel found here.");
-      return;
-    }
-
-    // Remove old highlighted parcel if any
-    if (highlightLayer) {
-      map.removeLayer(highlightLayer);
-    }
-
-    // Add highlighted parcel geometry
-    highlightLayer = L.geoJSON(data.geometry, {
-      style: {
-        color: "yellow",
-        weight: 3,
-        fillColor: "orange",
-        fillOpacity: 0.2
-      }
-    }).addTo(map);
-
-    // Zoom to parcel
-    map.fitBounds(highlightLayer.getBounds(), { maxZoom: 17 });
-
-    alert(JSON.stringify({
-    attributes: data.attributes,
-    coordinates: data.coordinates
-    }, null, 2));
-
-
-  });
-</script>
+</html>
