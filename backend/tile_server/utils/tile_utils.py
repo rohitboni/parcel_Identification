@@ -1,7 +1,5 @@
-# backend/tile-server/utils/tile_utils.py
 import math
 
-# Web Mercator constants
 TILE_SIZE = 256
 EARTH_RADIUS = 6378137
 INITIAL_RESOLUTION = 2 * math.pi * EARTH_RADIUS / TILE_SIZE

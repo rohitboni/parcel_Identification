@@ -5,3 +5,6 @@ backend/tile_server/cache/
 backend/cache/
 backend/tile_server/test.py
 backend/tile_server/tile_server_vector.py
+.env
+.env.local
+etl/load_vellore.py
