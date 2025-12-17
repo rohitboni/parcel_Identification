@@ -8,9 +8,11 @@ from rasterio import features
 from rasterio.transform import from_bounds
 import psycopg2
 from .tile_utils import tile_xyz_to_bounds
+import logging
 
-import os
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -55,8 +57,8 @@ def fetch_tile_parcels(minx, miny, maxx, maxy):
             "label_point": wkb_loads(label_point_wkb.tobytes())
         })
 
-    print(f"Fetched {len(parcels)} parcels")
-    # print(parcels)
+    # Logging disabled for performance - uncomment if needed for debugging
+    # logger.debug(f"Fetched {len(parcels)} parcels")
     return parcels
 
 
