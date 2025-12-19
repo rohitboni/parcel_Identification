@@ -1,9 +1,6 @@
 from fastapi import APIRouter, Response, HTTPException, Query
-from fastapi.responses import JSONResponse
 from tile_server.utils.generate_tile import generate_raster_tile
 from tile_server.utils.cache_manager import get_tile_from_cache, save_tile_to_cache
-from tile_server.utils.viewport_tiles import generate_tiles_for_viewport
-import asyncio
 
 router = APIRouter()
 
@@ -53,34 +50,3 @@ async def get_raster_tile(
     save_tile_to_cache(z, x, y, tile_img, state_code=state_code, district_code=district_code)
     print(f"[CACHE SAVED] Tile {z}/{x}/{y} saved to cache")
     return Response(content=tile_img, media_type="image/png", headers=cache_headers)
-
-
-@router.get("/api/pregenerate-viewport")
-async def pregenerate_viewport_tiles(
-    min_lat: float = Query(...),
-    min_lon: float = Query(...),
-    max_lat: float = Query(...),
-    max_lon: float = Query(...),
-    zoom: int = Query(..., ge=15, le=18),
-    state_code: str = Query(None),
-    district_code: str = Query(None),
-    surrounding_radius: int = Query(2, ge=0, le=5)
-):
-    """
-    Pre-generate tiles for viewport area with priority:
-    1. Viewport tiles (generated immediately)
-    2. Surrounding tiles (generated in spiral pattern)
-    
-    This endpoint is called by the frontend when the map viewport changes.
-    Tiles are generated in priority order: viewport first, then surrounding.
-    """
-    try:
-        # Run tile generation in background to avoid blocking
-        result = await asyncio.to_thread(
-            generate_tiles_for_viewport,
-            min_lat, min_lon, max_lat, max_lon, zoom,
-            state_code, district_code, surrounding_radius
-        )
-        return JSONResponse(result)
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
