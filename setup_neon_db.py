@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
 """
-Setup Neon Production Database Schema
+Setup Local Database Schema
 
-Creates partitioned tables for the Neon production database (india_cadastral_production).
-This creates a new schema structure similar to the local database but adapted for Neon DB.
+Creates a new database and partitioned tables for local PostgreSQL.
+This creates a new schema structure with 2 partitioned tables.
 
 Usage:
     python setup_neon_db.py
+    
+    # Or with custom database name
+    DB_NAME=parcels_db_new python setup_neon_db.py
 """
 
 import os
 import sys
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import psycopg2
-from psycopg2 import sql
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,43 +28,77 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Neon Database Connection
-NEON_DB_CONFIG = {
-    "host": "ep-shy-king-a1mismh7-pooler.ap-southeast-1.aws.neon.tech",
-    "port": 5432,
-    "database": "india_cadastral_production",
-    "user": "neondb_owner",
-    "password": "npg_KwgtR7LI1qUA",
-    "sslmode": "require"
+# Local Database Connection (for creating database)
+# Force localhost to ensure we're creating a local database
+LOCAL_DB_CONFIG = {
+    "host": "127.0.0.1",  # Force localhost
+    "port": 5432,  # Default PostgreSQL port
+    "user": "postgres",  # Default PostgreSQL user
+    "password": os.getenv("DB_PASSWORD", "postgres")  # Only use password from env if set
 }
 
-
-def get_neon_connection_string():
-    """Get Neon database connection string."""
-    return (
-        f"postgresql://{NEON_DB_CONFIG['user']}:{NEON_DB_CONFIG['password']}"
-        f"@{NEON_DB_CONFIG['host']}/{NEON_DB_CONFIG['database']}"
-        f"?sslmode={NEON_DB_CONFIG['sslmode']}"
-    )
+# Database name to create - use environment variable or default
+NEW_DB_NAME = os.getenv("NEW_DB_NAME", "parcels_db_new")
 
 
-def setup_neon_schema():
-    """Create partitioned tables in Neon database."""
-    conn_str = get_neon_connection_string()
-    
-    logger.info("Connecting to Neon database...")
-    logger.info(f"Host: {NEON_DB_CONFIG['host']}, Database: {NEON_DB_CONFIG['database']}")
+def create_database(db_name):
+    """Create a new database if it doesn't exist."""
+    # Connect to postgres database to create new database
+    config = LOCAL_DB_CONFIG.copy()
+    config['database'] = 'postgres'  # Connect to default postgres database
     
     try:
-        conn = psycopg2.connect(conn_str)
+        conn = psycopg2.connect(**config)
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cur = conn.cursor()
+        
+        # Check if database exists
+        cur.execute("""
+            SELECT 1 FROM pg_database WHERE datname = %s;
+        """, (db_name,))
+        
+        exists = cur.fetchone()
+        
+        if exists:
+            logger.info(f"Database '{db_name}' already exists. Using existing database.")
+        else:
+            logger.info(f"Creating new database '{db_name}'...")
+            cur.execute(f'CREATE DATABASE {db_name};')
+            logger.info(f"Database '{db_name}' created successfully!")
+        
+        cur.close()
+        conn.close()
+        
+    except psycopg2.Error as e:
+        logger.error(f"Error creating database: {e}")
+        raise
+
+
+def setup_local_schema():
+    """Create partitioned tables in local database."""
+    # First, create the database
+    create_database(NEW_DB_NAME)
+    
+    # Now connect to the new database
+    db_config = LOCAL_DB_CONFIG.copy()
+    db_config['database'] = NEW_DB_NAME
+    
+    logger.info("=" * 60)
+    logger.info("Setting up Local Database Schema")
+    logger.info("=" * 60)
+    logger.info(f"Connecting to local database...")
+    logger.info(f"Host: {db_config['host']}, Database: {db_config['database']}")
+    
+    try:
+        conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
         
         logger.info("Enabling PostGIS extension...")
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
         
-        logger.info("Creating parcels_master_neon partitioned table...")
+        logger.info("Creating parcels_master partitioned table...")
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS parcels_master_neon (
+        CREATE TABLE IF NOT EXISTS parcels_master (
             parcel_uuid           UUID NOT NULL DEFAULT gen_random_uuid(),
             geom                  geometry(MultiPolygon, 4326) NOT NULL,
             label_point           geometry(Point, 4326),
@@ -74,9 +115,9 @@ def setup_neon_schema():
         ) PARTITION BY LIST (state_code);
         """)
         
-        logger.info("Creating parcels_simplified_neon partitioned table...")
+        logger.info("Creating parcels_simplified partitioned table...")
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS parcels_simplified_neon (
+        CREATE TABLE IF NOT EXISTS parcels_simplified (
             parcel_uuid     UUID NOT NULL,
             geom            geometry(MultiPolygon, 4326) NOT NULL,
             label_point     geometry(Point, 4326) NOT NULL,
@@ -89,7 +130,7 @@ def setup_neon_schema():
         
         logger.info("Creating partition functions...")
         cur.execute("""
-        CREATE OR REPLACE FUNCTION create_master_neon_partitions()
+        CREATE OR REPLACE FUNCTION create_master_partitions()
         RETURNS TRIGGER AS $$
         DECLARE
             state_part_name TEXT;
@@ -97,7 +138,7 @@ def setup_neon_schema():
             state_exists BOOLEAN;
             district_exists BOOLEAN;
         BEGIN
-            state_part_name := 'parcels_master_neon_' || lower(NEW.state_code);
+            state_part_name := 'parcels_master_' || lower(NEW.state_code);
             district_part_name := state_part_name || '_' || NEW.district_code;
 
             SELECT EXISTS (
@@ -106,7 +147,7 @@ def setup_neon_schema():
 
             IF NOT state_exists THEN
                 EXECUTE format(
-                    'CREATE TABLE %I PARTITION OF parcels_master_neon
+                    'CREATE TABLE %I PARTITION OF parcels_master
                      FOR VALUES IN (%L)
                      PARTITION BY LIST (district_code);',
                     state_part_name,
@@ -153,7 +194,7 @@ def setup_neon_schema():
         """)
         
         cur.execute("""
-        CREATE OR REPLACE FUNCTION create_simplified_neon_partitions()
+        CREATE OR REPLACE FUNCTION create_simplified_partitions()
         RETURNS TRIGGER AS $$
         DECLARE
             state_part_name TEXT;
@@ -161,7 +202,7 @@ def setup_neon_schema():
             state_exists BOOLEAN;
             district_exists BOOLEAN;
         BEGIN
-            state_part_name := 'parcels_simplified_neon_' || lower(NEW.state_code);
+            state_part_name := 'parcels_simplified_' || lower(NEW.state_code);
             district_part_name := state_part_name || '_' || NEW.district_code;
 
             SELECT EXISTS (
@@ -170,7 +211,7 @@ def setup_neon_schema():
 
             IF NOT state_exists THEN
                 EXECUTE format(
-                    'CREATE TABLE %I PARTITION OF parcels_simplified_neon
+                    'CREATE TABLE %I PARTITION OF parcels_simplified
                      FOR VALUES IN (%L)
                      PARTITION BY LIST (district_code);',
                     state_part_name,
@@ -218,29 +259,34 @@ def setup_neon_schema():
         
         logger.info("Creating triggers...")
         cur.execute("""
-        DROP TRIGGER IF EXISTS trg_create_master_neon_partitions ON parcels_master_neon;
-        CREATE TRIGGER trg_create_master_neon_partitions
-        BEFORE INSERT ON parcels_master_neon
+        DROP TRIGGER IF EXISTS trg_create_master_partitions ON parcels_master;
+        CREATE TRIGGER trg_create_master_partitions
+        BEFORE INSERT ON parcels_master
         FOR EACH ROW
-        EXECUTE FUNCTION create_master_neon_partitions();
+        EXECUTE FUNCTION create_master_partitions();
         """)
         
         cur.execute("""
-        DROP TRIGGER IF EXISTS trg_create_simplified_neon_partitions ON parcels_simplified_neon;
-        CREATE TRIGGER trg_create_simplified_neon_partitions
-        BEFORE INSERT ON parcels_simplified_neon
+        DROP TRIGGER IF EXISTS trg_create_simplified_partitions ON parcels_simplified;
+        CREATE TRIGGER trg_create_simplified_partitions
+        BEFORE INSERT ON parcels_simplified
         FOR EACH ROW
-        EXECUTE FUNCTION create_simplified_neon_partitions();
+        EXECUTE FUNCTION create_simplified_partitions();
         """)
         
         conn.commit()
         logger.info("=" * 60)
-        logger.info("Neon database schema setup completed successfully!")
+        logger.info("Local database schema setup completed successfully!")
         logger.info("=" * 60)
+        logger.info(f"Database: {NEW_DB_NAME}")
         logger.info("Tables created:")
-        logger.info("  - parcels_master_neon (partitioned)")
-        logger.info("  - parcels_simplified_neon (partitioned)")
+        logger.info("  - parcels_master (partitioned)")
+        logger.info("  - parcels_simplified (partitioned)")
         logger.info("Partition functions and triggers are ready")
+        logger.info("=" * 60)
+        logger.info(f"\nTo use this database, update your .env file:")
+        logger.info(f"  DB_NAME={NEW_DB_NAME}")
+        logger.info("=" * 60)
         
         cur.close()
         conn.close()
@@ -250,9 +296,10 @@ def setup_neon_schema():
         sys.exit(1)
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
 if __name__ == '__main__':
-    setup_neon_schema()
-
+    setup_local_schema()

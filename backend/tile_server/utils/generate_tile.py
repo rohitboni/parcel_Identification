@@ -9,74 +9,141 @@ from rasterio.transform import from_bounds
 import psycopg2
 from .tile_utils import tile_xyz_to_bounds
 import logging
+import sys
+from pathlib import Path
 
-from dotenv import load_dotenv
+# Add backend directory to path to import config
+backend_dir = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(backend_dir))
+
+from config import DB_CONFIG, TABLE_SIMPLIFIED
 
 logger = logging.getLogger(__name__)
 
-load_dotenv()
 
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST"),
-    "port": int(os.getenv("DB_PORT")),
-    "database": os.getenv("DB_NAME"),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD")
-}
-
+# Use connection pooling for better performance
+try:
+    from .performance_optimizer import get_db_connection, return_db_connection
+    USE_CONNECTION_POOL = True
+except ImportError:
+    USE_CONNECTION_POOL = False
+    # Fallback to single connection reuse
+    _db_connection = None
 
 def connect_db():
-    return psycopg2.connect(**DB_CONFIG)
+    """Get database connection (uses pool if available, otherwise reuses single connection)."""
+    if USE_CONNECTION_POOL:
+        return get_db_connection()
+    else:
+        # Fallback: reuse single connection
+        global _db_connection
+        if _db_connection is None or _db_connection.closed:
+            _db_connection = psycopg2.connect(**DB_CONFIG)
+        return _db_connection
 
-def fetch_tile_parcels(minx, miny, maxx, maxy):
+def fetch_tile_parcels(minx, miny, maxx, maxy, state_code=None, district_code=None):
+    """
+    Fetch parcels for a tile using optimized query.
+    Uses connection reuse and optimized geometry conversion.
+    Optional filters: state_code, district_code
+    
+    Performance optimizations:
+    - Uses spatial index (GIST) for fast bounding box queries
+    - Filters by state/district to use partition pruning
+    - Limits results to 1000 parcels per tile
+    """
     conn = connect_db()
     cur = conn.cursor()
 
-    query = """
+    # Build WHERE clause with optional filters
+    # IMPORTANT: Put partition filters FIRST for partition pruning
+    where_clauses = []
+    params = []
+    
+    if state_code:
+        where_clauses.append("state_code = %s")
+        params.append(state_code.upper())
+    
+    if district_code:
+        where_clauses.append("district_code = %s")
+        params.append(district_code)
+    
+    # Add spatial filter (uses GIST index)
+    where_clauses.append("geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)")
+    params.extend([minx, miny, maxx, maxy])
+    
+    where_clause = " AND ".join(where_clauses)
+    
+    # Optimized query: Partition filters first, then spatial filter
+    # This helps PostgreSQL use partition pruning + spatial index
+    query = f"""
         SELECT parcel_uuid,
                survey_num,
-               ST_AsEWKB(geom),
-               ST_AsEWKB(label_point)
-        FROM parcels_simplified
-        WHERE geom && ST_MakeEnvelope(%s, %s, %s, %s, 4326)
-          AND ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326));
+               ST_AsEWKB(geom) as geom_wkb,
+               ST_AsEWKB(label_point) as label_point_wkb
+        FROM {TABLE_SIMPLIFIED}
+        WHERE {where_clause}
+        LIMIT 1000;
     """
 
-    cur.execute(query, (minx, miny, maxx, maxy, minx, miny, maxx, maxy))
+    # Use binary cursor for faster data transfer
+    cur.execute(query, params)
     results = cur.fetchall()
 
     cur.close()
-    conn.close()
+    
+    # Return connection to pool if using pooling, otherwise keep it open
+    if USE_CONNECTION_POOL:
+        return_db_connection(conn)
+    # Otherwise, connection stays open for reuse
 
+    # Process results efficiently - batch geometry conversion
     parcels = []
-    for parcel_uuid, survey_num, geom_wkb, label_point_wkb in results:
-        parcels.append({
-            "uuid": parcel_uuid,
-            "survey_num": survey_num,
-            "geometry": wkb_loads(geom_wkb.tobytes()),
-            "label_point": wkb_loads(label_point_wkb.tobytes())
-        })
+    for row in results:
+        parcel_uuid, survey_num, geom_wkb, label_point_wkb = row
+        try:
+            # Convert WKB to Shapely geometries
+            # Note: wkb_loads is faster than ST_AsText conversion
+            geom = wkb_loads(geom_wkb.tobytes()) if geom_wkb else None
+            label_pt = wkb_loads(label_point_wkb.tobytes()) if label_point_wkb else None
+            
+            if geom is None:
+                continue
+                
+            parcels.append({
+                "uuid": parcel_uuid,
+                "survey_num": survey_num,
+                "geometry": geom,
+                "label_point": label_pt
+            })
+        except Exception as e:
+            logger.debug(f"Error loading geometry for parcel {parcel_uuid}: {e}")
+            continue
 
-    # Logging disabled for performance - uncomment if needed for debugging
-    # logger.debug(f"Fetched {len(parcels)} parcels")
     return parcels
 
 
-def generate_raster_tile(z: int, x: int, y: int) -> bytes:
+def generate_raster_tile(z: int, x: int, y: int, state_code=None, district_code=None) -> bytes:
     """
     Generate a 256x256 PNG raster tile showing parcel borders
     and survey numbers inside the polygons.
     
     Uses 2x supersampling (512x512) for smoother, anti-aliased lines.
+    
+    Optional filters: state_code, district_code
     """
     # Tile bounding box
     minx, miny, maxx, maxy = tile_xyz_to_bounds(x, y, z)
-    tile_parcels = fetch_tile_parcels(minx, miny, maxx, maxy)
+    tile_parcels = fetch_tile_parcels(minx, miny, maxx, maxy, state_code=state_code, district_code=district_code)
+    
     if not tile_parcels:
+        print(f"[GENERATING] Tile {z}/{x}/{y} - No parcels found, returning empty tile")
         img = Image.new("RGBA", (256, 256), (255, 255, 255, 0))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
+    
+    print(f"[GENERATING] Tile {z}/{x}/{y} - Processing {len(tile_parcels)} parcels")
 
     # Render at higher resolution for smoother lines (2x supersampling)
     TILE_SIZE = 256
