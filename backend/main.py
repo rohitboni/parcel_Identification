@@ -15,4 +15,4 @@ app.add_middleware(
 )
 
 app.include_router(identify_router, prefix="/api")
-app.include_router(tile_router)
+app.include_router(tile_router)  # Tiles at /tiles/{z}/{x}/{y}.png
