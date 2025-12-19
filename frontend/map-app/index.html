@@ -8,15 +8,6 @@
     body, html, #map { margin:0; padding:0; height:100%; }
     .info { padding: 10px; background: white; border-radius: 5px; box-shadow: 0 0 15px rgba(0,0,0,0.2); }
     .info b { display: block; margin-bottom: 5px; }
-    .place-label { 
-      font-weight: bold; 
-      text-shadow: -1px -1px 0 white, 1px -1px 0 white, -1px 1px 0 white, 1px 1px 0 white;
-      pointer-events: none;
-      white-space: nowrap;
-      font-size: 12px;
-    }
-    .place-label.district { font-size: 14px; color: #1a1a1a; }
-    .place-label.village { font-size: 11px; color: #333; }
     .filter-panel {
       position: absolute;
       top: 10px;
@@ -77,12 +68,16 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     // Default view - can be overridden via URL parameters
+    // Minimum zoom is 15 (backend only supports zoom 15-18)
     const urlParams = new URLSearchParams(window.location.search);
     const defaultLat = parseFloat(urlParams.get('lat')) || 13.52;
     const defaultLon = parseFloat(urlParams.get('lon')) || 76.95;
-    const defaultZoom = parseInt(urlParams.get('zoom')) || 11;
+    const defaultZoom = Math.max(15, parseInt(urlParams.get('zoom')) || 15);
     
-    const map = L.map('map').setView([defaultLat, defaultLon], defaultZoom);
+    const map = L.map('map', {
+      minZoom: 15,  // Prevent zooming below 15 (backend requirement)
+      maxZoom: 18   // Maximum zoom supported by backend
+    }).setView([defaultLat, defaultLon], defaultZoom);
     
     // Basemap - Esri World Imagery
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
@@ -139,7 +134,7 @@
       
       const tileUrlTemplate = filterParams 
         ? `http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png?${filterParams}`
-        : 'http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png';
+        : 'http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png';  // Via API Gateway
       
       // Only recreate if URL template actually changed or forced
       const needsUpdate = forceRecreate || 
@@ -163,25 +158,23 @@
           maxZoom: 18,
           opacity: 0.9,
           attribution: 'Parcel Boundaries',
-          // Aggressive caching - keep many tiles in memory
-          keepBuffer: 8,           // Keep 8 rings of tiles around viewport
-          updateWhenIdle: true,    // Only update when map is idle
-          updateWhenZooming: false, // Don't update during zoom animation
+          // Optimized settings to prevent flickering
+          keepBuffer: 4,              // Reduced buffer to prevent excessive tile loading
+          updateWhenIdle: true,       // Only update when map stops moving (prevents flicker)
+          updateWhenZooming: false,   // Don't update during zoom animation (prevents flicker)
           tileSize: 256,
           zIndex: 100,
-          // Prevent tile unloading
+          // Prevent tile unloading - keeps tiles in memory
           unloadInvisibleTiles: false,
-          reuseTiles: true,
-          // Cross-origin for caching
-          crossOrigin: 'anonymous'
+          reuseTiles: true           // Reuse existing tiles when possible
         }).addTo(map);
-        
+
         // Clear failed tiles when layer is updated
         failedTiles.clear();
       }
     }
     
-    // Ensure tile layer stays on map
+    // Ensure tile layer stays on map (only needed if layer was accidentally removed)
     function ensureTileLayerOnMap() {
       if (parcelTileLayer && !map.hasLayer(parcelTileLayer)) {
         console.log('Re-adding tile layer to map');
@@ -189,13 +182,8 @@
       }
     }
     
-    // Force refresh tiles that might have failed
-    function refreshVisibleTiles() {
-      if (parcelTileLayer) {
-        // Redraw the tile layer to reload any missing tiles
-        parcelTileLayer.redraw();
-      }
-    }
+    // Note: Removed refreshVisibleTiles() - Leaflet automatically loads tiles as needed
+    // Calling redraw() causes flickering by reloading all visible tiles
     
     // Initial tile layer
     updateParcelTileLayer();
@@ -203,7 +191,7 @@
     // Load states and districts
     async function loadStatesDistricts() {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/states-districts');
+        const response = await fetch('http://127.0.0.1:8000/api/states-districts');  // Via API Gateway
         const data = await response.json();
         
         const stateSelect = document.getElementById('stateSelect');
@@ -269,11 +257,6 @@
         
         // Update tile layer with new filters
         updateParcelTileLayer();
-        
-        // Clear cache and reload place labels with new filters
-        placeLabelsCache = null;
-        cachedFilterKey = null;
-        loadPlaceLabels();
       }
       
       // Update info
@@ -292,16 +275,16 @@
           if (currentStateCode) params.append('state_code', currentStateCode);
           if (currentDistrictCode) params.append('district_code', currentDistrictCode);
           
-          const response = await fetch(`http://127.0.0.1:8000/api/bounds?${params.toString()}`);
+          const response = await fetch(`http://127.0.0.1:8000/api/bounds?${params.toString()}`);  // Via API Gateway
           const data = await response.json();
           
           if (data.bounds) {
             const [minLon, minLat, maxLon, maxLat] = data.bounds;
             const bounds = [[minLat, minLon], [maxLat, maxLon]];
-            map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+            map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15, minZoom: 15 });
           } else if (data.center) {
-            // Fallback to center if bounds not available
-            map.setView(data.center, 12);
+            // Fallback to center if bounds not available - use zoom 15 minimum
+            map.setView(data.center, 15);
           }
         } catch (error) {
           console.error('Error getting bounds:', error);
@@ -323,96 +306,6 @@
     // Parcel highlight layer
   let highlightLayer = null;
 
-    // Place labels layer
-    let placeLabelsLayer = L.layerGroup().addTo(map);
-    
-    // Cache for place labels (keyed by state_code-district_code)
-    let placeLabelsCache = null;
-    let cachedFilterKey = null;
-    
-    // Function to create a text label marker
-    function createTextLabel(name, lat, lon, type) {
-      const labelHtml = '<div class="place-label ' + type + '">' + name + '</div>';
-      
-      return L.marker([lat, lon], {
-        icon: L.divIcon({
-          html: labelHtml,
-          className: 'place-label-container',
-          iconSize: null,
-          iconAnchor: [0, 0]
-        }),
-        zIndexOffset: 1000,
-        interactive: false
-      });
-    }
-    
-    // Function to filter labels based on zoom level
-    function filterLabelsByZoom(allLabels, zoom) {
-      if (!allLabels || allLabels.length === 0) return [];
-      
-      if (zoom < 13) {
-        // Show districts only
-        return allLabels.filter(l => l.type === 'district');
-      } else if (zoom < 15) {
-        // Show villages with more parcels (filtered)
-        return allLabels.filter(l => {
-          if (l.type === 'district') return true;
-          return l.type === 'village' && (l.parcel_count || 0) > 10;
-        });
-      } else {
-        // Show all villages
-        return allLabels.filter(l => {
-          if (l.type === 'district') return true;
-          return l.type === 'village' && (l.parcel_count || 0) > 5;
-        });
-      }
-    }
-    
-    // Function to load place labels (cached, only fetch once per filter combination)
-    async function loadPlaceLabels() {
-      const zoom = map.getZoom();
-      const filterKey = `${currentStateCode || 'all'}-${currentDistrictCode || 'all'}`;
-      
-      // Check if we need to fetch new data
-      if (placeLabelsCache === null || cachedFilterKey !== filterKey) {
-        console.log(`[PLACE-LABELS] Fetching labels for filter: ${filterKey}`);
-        try {
-          const params = new URLSearchParams();
-          if (currentStateCode) params.append('state_code', currentStateCode);
-          if (currentDistrictCode) params.append('district_code', currentDistrictCode);
-          
-          const url = `http://127.0.0.1:8000/api/place-labels?${params.toString()}`;
-          const response = await fetch(url);
-          const data = await response.json();
-          
-          // Cache the results
-          placeLabelsCache = data.labels || [];
-          cachedFilterKey = filterKey;
-          console.log(`[PLACE-LABELS] Cached ${placeLabelsCache.length} labels`);
-        } catch (error) {
-          console.error('Error loading place labels:', error);
-          return;
-        }
-      } else {
-        console.log(`[PLACE-LABELS] Using cached labels (${placeLabelsCache.length} total)`);
-      }
-      
-      // Filter labels based on current zoom level
-      const filteredLabels = filterLabelsByZoom(placeLabelsCache, zoom);
-      
-      // Clear existing labels
-      placeLabelsLayer.clearLayers();
-      
-      // Add filtered labels
-      if (filteredLabels.length > 0) {
-        filteredLabels.forEach(label => {
-          const marker = createTextLabel(label.name, label.lat, label.lon, label.type);
-          placeLabelsLayer.addLayer(marker);
-        });
-        console.log(`[PLACE-LABELS] Displaying ${filteredLabels.length} labels at zoom ${zoom}`);
-      }
-    }
-    
     // Viewport tile pre-generation
     let viewportGenerationTimeout = null;
     
@@ -441,16 +334,14 @@
         if (currentDistrictCode) params.append('district_code', currentDistrictCode);
         params.append('surrounding_radius', '2'); // Generate 2 rings of surrounding tiles
         
-        // Call pre-generation endpoint (non-blocking)
+        // Call pre-generation endpoint (non-blocking) - Via API Gateway
         fetch(`http://127.0.0.1:8000/api/pregenerate-viewport?${params.toString()}`)
           .then(response => response.json())
           .then(data => {
             if (data.generated || data.cached) {
               console.log(`Viewport tiles: ${data.generated || 0} generated, ${data.cached || 0} cached`);
-              // Refresh tiles after pre-generation to show newly generated tiles
-              if (data.generated > 0) {
-                setTimeout(refreshVisibleTiles, 100);
-              }
+              // Note: Tiles will load automatically when Leaflet requests them
+              // No need to manually refresh - that causes flickering
             }
           })
           .catch(error => {
@@ -471,35 +362,30 @@
       }, 500); // Wait 500ms after map stops moving
     }
     
-    // Load labels on map move/zoom - combined handlers
+    // Map move/zoom handlers
     map.on('moveend', function() {
-      loadPlaceLabels();
-      scheduleViewportGeneration(); // Pre-generate tiles for viewport
-      ensureTileLayerOnMap();
-      // Refresh tiles to ensure all visible tiles are loaded
-      refreshVisibleTiles();
+      scheduleViewportGeneration(); // Pre-generate tiles for viewport (background)
+      // Note: Leaflet automatically loads new tiles - no manual refresh needed
     });
     
     map.on('zoomend', function() {
-      loadPlaceLabels();
-      scheduleViewportGeneration(); // Pre-generate tiles for new zoom level
+      scheduleViewportGeneration(); // Pre-generate tiles for new zoom level (background)
       info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/>Click on a parcel to identify';
-      ensureTileLayerOnMap();
+      // Note: Leaflet automatically loads tiles for new zoom level
     });
     
-    // Ensure tile layer persists on map view reset and layer events
+    // Ensure tile layer persists on map view reset (shouldn't be needed normally)
     map.on('viewreset', ensureTileLayerOnMap);
     map.on('layerremove', function(e) {
       // If parcel tile layer was removed unexpectedly, re-add it after a short delay
       if (e.layer === parcelTileLayer) {
-        console.log('Tile layer was removed, will re-add');
+        console.warn('Tile layer was removed unexpectedly, re-adding');
         setTimeout(ensureTileLayerOnMap, 100);
       }
     });
     
     // Initial load
     loadStatesDistricts();
-    loadPlaceLabels();
     pregenerateViewportTiles(); // Pre-generate tiles for initial viewport
     
     // Click handler for parcel identification
@@ -511,7 +397,7 @@
 
     // Call backend identify API
       try {
-    const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;
+    const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;  // Via API Gateway
     const response = await fetch(url);
     const data = await response.json();
 
@@ -535,8 +421,8 @@
       }
     }).addTo(map);
 
-    // Zoom to parcel
-    map.fitBounds(highlightLayer.getBounds(), { maxZoom: 17 });
+    // Zoom to parcel (ensure minimum zoom of 15)
+    map.fitBounds(highlightLayer.getBounds(), { maxZoom: 17, minZoom: 15 });
 
         // Update info panel with parcel details
         const attrs = data.attributes;
