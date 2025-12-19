@@ -17,27 +17,297 @@
     }
     .place-label.district { font-size: 14px; color: #1a1a1a; }
     .place-label.village { font-size: 11px; color: #333; }
+    .filter-panel {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1000;
+      background: white;
+      padding: 15px;
+      border-radius: 5px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.2);
+      min-width: 250px;
+    }
+    .filter-panel h3 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .filter-panel select {
+      width: 100%;
+      padding: 5px;
+      margin-bottom: 10px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+    }
+    .filter-panel button {
+      width: 100%;
+      padding: 8px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .filter-panel button:hover {
+      background: #0056b3;
+    }
+    .filter-panel .info-text {
+      font-size: 11px;
+      color: #666;
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div class="filter-panel">
+    <h3>Filter by Location</h3>
+    <select id="stateSelect">
+      <option value="">All States</option>
+    </select>
+    <select id="districtSelect">
+      <option value="">All Districts</option>
+    </select>
+    <button id="applyFilter">Apply Filter</button>
+    <div class="info-text" id="filterInfo">Loading states...</div>
+  </div>
+  
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    const map = L.map('map').setView([13.1, 79.28], 12);
+    // Default view - can be overridden via URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const defaultLat = parseFloat(urlParams.get('lat')) || 13.52;
+    const defaultLon = parseFloat(urlParams.get('lon')) || 76.95;
+    const defaultZoom = parseInt(urlParams.get('zoom')) || 11;
+    
+    const map = L.map('map').setView([defaultLat, defaultLon], defaultZoom);
     
     // Basemap - Esri World Imagery
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       attribution: 'Esri',
       maxZoom: 19
     }).addTo(map);
+
+    // Parcel Overlay Tiles - will be updated when filter changes
+    let parcelTileLayer = null;
     
-    // Parcel Overlay Tiles
-    L.tileLayer('http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png', {
-      minZoom: 15,
-      maxZoom: 18,
-      opacity: 0.9,
-      attribution: 'Parcel Boundaries'
-    }).addTo(map);
+    // Filter state
+    let currentStateCode = '';
+    let currentDistrictCode = '';
+    
+    // Track current tile URL to avoid unnecessary recreation
+    let currentTileUrlTemplate = '';
+    
+    // Track failed tiles for retry
+    const failedTiles = new Map();
+    const MAX_RETRIES = 3;
+    
+    // Custom tile layer class with retry logic
+    const RetryTileLayer = L.TileLayer.extend({
+      _loadTile: function(tile, coords) {
+        const key = `${coords.z}/${coords.x}/${coords.y}`;
+        
+        tile._retryCount = tile._retryCount || 0;
+        
+        tile.onerror = () => {
+          if (tile._retryCount < MAX_RETRIES) {
+            tile._retryCount++;
+            console.log(`Retrying tile ${key} (attempt ${tile._retryCount})`);
+            setTimeout(() => {
+              tile.src = this.getTileUrl(coords) + '&retry=' + tile._retryCount;
+            }, 500 * tile._retryCount); // Exponential backoff
+          } else {
+            console.warn(`Tile ${key} failed after ${MAX_RETRIES} retries`);
+            failedTiles.set(key, Date.now());
+          }
+        };
+        
+        // Call parent method
+        L.TileLayer.prototype._loadTile.call(this, tile, coords);
+      }
+    });
+    
+    // Function to create/update parcel tile layer
+    function updateParcelTileLayer(forceRecreate = false) {
+      // Build tile URL template with filters
+      const params = new URLSearchParams();
+      if (currentStateCode) params.append('state_code', currentStateCode);
+      if (currentDistrictCode) params.append('district_code', currentDistrictCode);
+      const filterParams = params.toString();
+      
+      const tileUrlTemplate = filterParams 
+        ? `http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png?${filterParams}`
+        : 'http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png';
+      
+      // Only recreate if URL template actually changed or forced
+      const needsUpdate = forceRecreate || 
+                          !parcelTileLayer || 
+                          currentTileUrlTemplate !== tileUrlTemplate;
+      
+      if (needsUpdate) {
+        console.log('Updating tile layer:', tileUrlTemplate);
+        
+        // Remove existing layer only if it exists
+        if (parcelTileLayer && map.hasLayer(parcelTileLayer)) {
+          map.removeLayer(parcelTileLayer);
+        }
+        
+        // Store new URL template for comparison
+        currentTileUrlTemplate = tileUrlTemplate;
+        
+        // Create new layer with retry support
+        parcelTileLayer = new RetryTileLayer(tileUrlTemplate, {
+          minZoom: 15,
+          maxZoom: 18,
+          opacity: 0.9,
+          attribution: 'Parcel Boundaries',
+          // Aggressive caching - keep many tiles in memory
+          keepBuffer: 8,           // Keep 8 rings of tiles around viewport
+          updateWhenIdle: true,    // Only update when map is idle
+          updateWhenZooming: false, // Don't update during zoom animation
+          tileSize: 256,
+          zIndex: 100,
+          // Prevent tile unloading
+          unloadInvisibleTiles: false,
+          reuseTiles: true,
+          // Cross-origin for caching
+          crossOrigin: 'anonymous'
+        }).addTo(map);
+        
+        // Clear failed tiles when layer is updated
+        failedTiles.clear();
+      }
+    }
+    
+    // Ensure tile layer stays on map
+    function ensureTileLayerOnMap() {
+      if (parcelTileLayer && !map.hasLayer(parcelTileLayer)) {
+        console.log('Re-adding tile layer to map');
+        parcelTileLayer.addTo(map);
+      }
+    }
+    
+    // Force refresh tiles that might have failed
+    function refreshVisibleTiles() {
+      if (parcelTileLayer) {
+        // Redraw the tile layer to reload any missing tiles
+        parcelTileLayer.redraw();
+      }
+    }
+    
+    // Initial tile layer
+    updateParcelTileLayer();
+    
+    // Load states and districts
+    async function loadStatesDistricts() {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/states-districts');
+        const data = await response.json();
+        
+        const stateSelect = document.getElementById('stateSelect');
+        const districtSelect = document.getElementById('districtSelect');
+        const filterInfo = document.getElementById('filterInfo');
+        
+        // Clear existing options (except "All")
+        stateSelect.innerHTML = '<option value="">All States</option>';
+        districtSelect.innerHTML = '<option value="">All Districts</option>';
+        
+        // Populate states
+        data.states.forEach(state => {
+          const option = document.createElement('option');
+          option.value = state.code;
+          option.textContent = `${state.name} (${state.count.toLocaleString()} parcels)`;
+          stateSelect.appendChild(option);
+        });
+        
+        // Update filter info
+        const totalParcels = data.states.reduce((sum, s) => sum + s.count, 0);
+        filterInfo.textContent = `Total: ${totalParcels.toLocaleString()} parcels`;
+        
+        // Handle state change
+        stateSelect.addEventListener('change', function() {
+          const selectedState = data.states.find(s => s.code === this.value);
+          
+          // Clear district select
+          districtSelect.innerHTML = '<option value="">All Districts</option>';
+          
+          if (selectedState) {
+            // Populate districts for selected state
+            selectedState.districts.forEach(district => {
+              const option = document.createElement('option');
+              option.value = district.code;
+              option.textContent = `${district.name} (${district.count.toLocaleString()} parcels)`;
+              districtSelect.appendChild(option);
+            });
+            
+            filterInfo.textContent = `${selectedState.name}: ${selectedState.count.toLocaleString()} parcels`;
+          } else {
+            filterInfo.textContent = `Total: ${totalParcels.toLocaleString()} parcels`;
+          }
+        });
+        
+      } catch (error) {
+        console.error('Error loading states/districts:', error);
+        document.getElementById('filterInfo').textContent = 'Error loading filters';
+      }
+    }
+    
+    // Apply filter button
+    document.getElementById('applyFilter').addEventListener('click', async function() {
+      const newStateCode = document.getElementById('stateSelect').value;
+      const newDistrictCode = document.getElementById('districtSelect').value;
+      
+      // Only update if filters actually changed
+      const filtersChanged = currentStateCode !== newStateCode || 
+                             currentDistrictCode !== newDistrictCode;
+      
+      if (filtersChanged) {
+        currentStateCode = newStateCode;
+        currentDistrictCode = newDistrictCode;
+        
+        // Update tile layer with new filters
+        updateParcelTileLayer();
+        
+        // Clear cache and reload place labels with new filters
+        placeLabelsCache = null;
+        cachedFilterKey = null;
+        loadPlaceLabels();
+      }
+      
+      // Update info
+      const stateSelect = document.getElementById('stateSelect');
+      const districtSelect = document.getElementById('districtSelect');
+      const stateText = stateSelect.options[stateSelect.selectedIndex].text.split(' (')[0];
+      const districtText = districtSelect.options[districtSelect.selectedIndex].text.split(' (')[0];
+      
+      document.getElementById('filterInfo').textContent = 
+        `Filter: ${stateText}${currentDistrictCode ? ' > ' + districtText : ''}`;
+      
+      // Zoom to selected area (only if filters changed)
+      if (filtersChanged) {
+        try {
+          const params = new URLSearchParams();
+          if (currentStateCode) params.append('state_code', currentStateCode);
+          if (currentDistrictCode) params.append('district_code', currentDistrictCode);
+          
+          const response = await fetch(`http://127.0.0.1:8000/api/bounds?${params.toString()}`);
+          const data = await response.json();
+          
+          if (data.bounds) {
+            const [minLon, minLat, maxLon, maxLat] = data.bounds;
+            const bounds = [[minLat, minLon], [maxLat, maxLon]];
+            map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+          } else if (data.center) {
+            // Fallback to center if bounds not available
+            map.setView(data.center, 12);
+          }
+        } catch (error) {
+          console.error('Error getting bounds:', error);
+        }
+      }
+    });
     
     // Info Control Panel
     const info = L.control({position: 'topright'});
@@ -48,16 +318,17 @@
     };
     info.addTo(map);
     
-    // Update info on zoom
-    map.on('zoomend', function() {
-      info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/>Click on a parcel to identify';
-    });
+    // Note: zoomend handler is combined below with other event handlers
     
     // Parcel highlight layer
-    let highlightLayer = null;
-    
+  let highlightLayer = null;
+
     // Place labels layer
     let placeLabelsLayer = L.layerGroup().addTo(map);
+    
+    // Cache for place labels (keyed by state_code-district_code)
+    let placeLabelsCache = null;
+    let cachedFilterKey = null;
     
     // Function to create a text label marker
     function createTextLabel(name, lat, lon, type) {
@@ -75,76 +346,198 @@
       });
     }
     
-    // Function to load and display place labels
-    async function loadPlaceLabels() {
-      const zoom = map.getZoom();
+    // Function to filter labels based on zoom level
+    function filterLabelsByZoom(allLabels, zoom) {
+      if (!allLabels || allLabels.length === 0) return [];
       
-      try {
-        const url = `http://127.0.0.1:8000/api/place-labels?zoom=${zoom}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        // Clear existing labels
-        placeLabelsLayer.clearLayers();
-        
-        // Add new labels
-        if (data.labels && data.labels.length > 0) {
-          data.labels.forEach(label => {
-            const marker = createTextLabel(label.name, label.lat, label.lon, label.type);
-            placeLabelsLayer.addLayer(marker);
-          });
-        }
-      } catch (error) {
-        console.error('Error loading place labels:', error);
+      if (zoom < 13) {
+        // Show districts only
+        return allLabels.filter(l => l.type === 'district');
+      } else if (zoom < 15) {
+        // Show villages with more parcels (filtered)
+        return allLabels.filter(l => {
+          if (l.type === 'district') return true;
+          return l.type === 'village' && (l.parcel_count || 0) > 10;
+        });
+      } else {
+        // Show all villages
+        return allLabels.filter(l => {
+          if (l.type === 'district') return true;
+          return l.type === 'village' && (l.parcel_count || 0) > 5;
+        });
       }
     }
     
-    // Load labels on map move/zoom
-    map.on('moveend', loadPlaceLabels);
+    // Function to load place labels (cached, only fetch once per filter combination)
+    async function loadPlaceLabels() {
+      const zoom = map.getZoom();
+      const filterKey = `${currentStateCode || 'all'}-${currentDistrictCode || 'all'}`;
+      
+      // Check if we need to fetch new data
+      if (placeLabelsCache === null || cachedFilterKey !== filterKey) {
+        console.log(`[PLACE-LABELS] Fetching labels for filter: ${filterKey}`);
+        try {
+          const params = new URLSearchParams();
+          if (currentStateCode) params.append('state_code', currentStateCode);
+          if (currentDistrictCode) params.append('district_code', currentDistrictCode);
+          
+          const url = `http://127.0.0.1:8000/api/place-labels?${params.toString()}`;
+          const response = await fetch(url);
+          const data = await response.json();
+          
+          // Cache the results
+          placeLabelsCache = data.labels || [];
+          cachedFilterKey = filterKey;
+          console.log(`[PLACE-LABELS] Cached ${placeLabelsCache.length} labels`);
+        } catch (error) {
+          console.error('Error loading place labels:', error);
+          return;
+        }
+      } else {
+        console.log(`[PLACE-LABELS] Using cached labels (${placeLabelsCache.length} total)`);
+      }
+      
+      // Filter labels based on current zoom level
+      const filteredLabels = filterLabelsByZoom(placeLabelsCache, zoom);
+      
+      // Clear existing labels
+      placeLabelsLayer.clearLayers();
+      
+      // Add filtered labels
+      if (filteredLabels.length > 0) {
+        filteredLabels.forEach(label => {
+          const marker = createTextLabel(label.name, label.lat, label.lon, label.type);
+          placeLabelsLayer.addLayer(marker);
+        });
+        console.log(`[PLACE-LABELS] Displaying ${filteredLabels.length} labels at zoom ${zoom}`);
+      }
+    }
+    
+    // Viewport tile pre-generation
+    let viewportGenerationTimeout = null;
+    
+    async function pregenerateViewportTiles() {
+      const bounds = map.getBounds();
+      const zoom = map.getZoom();
+      
+      // Only pre-generate for zoom levels 15-18
+      if (zoom < 15 || zoom > 18) {
+        return;
+      }
+      
+      const min_lat = bounds.getSouth();
+      const min_lon = bounds.getWest();
+      const max_lat = bounds.getNorth();
+      const max_lon = bounds.getEast();
+      
+      try {
+        const params = new URLSearchParams();
+        params.append('min_lat', min_lat);
+        params.append('min_lon', min_lon);
+        params.append('max_lat', max_lat);
+        params.append('max_lon', max_lon);
+        params.append('zoom', zoom);
+        if (currentStateCode) params.append('state_code', currentStateCode);
+        if (currentDistrictCode) params.append('district_code', currentDistrictCode);
+        params.append('surrounding_radius', '2'); // Generate 2 rings of surrounding tiles
+        
+        // Call pre-generation endpoint (non-blocking)
+        fetch(`http://127.0.0.1:8000/api/pregenerate-viewport?${params.toString()}`)
+          .then(response => response.json())
+          .then(data => {
+            if (data.generated || data.cached) {
+              console.log(`Viewport tiles: ${data.generated || 0} generated, ${data.cached || 0} cached`);
+              // Refresh tiles after pre-generation to show newly generated tiles
+              if (data.generated > 0) {
+                setTimeout(refreshVisibleTiles, 100);
+              }
+            }
+          })
+          .catch(error => {
+            console.error('Error pre-generating viewport tiles:', error);
+          });
+      } catch (error) {
+        console.error('Error in pregenerateViewportTiles:', error);
+      }
+    }
+    
+    // Debounced viewport tile generation (wait 500ms after map stops moving)
+    function scheduleViewportGeneration() {
+      if (viewportGenerationTimeout) {
+        clearTimeout(viewportGenerationTimeout);
+      }
+      viewportGenerationTimeout = setTimeout(() => {
+        pregenerateViewportTiles();
+      }, 500); // Wait 500ms after map stops moving
+    }
+    
+    // Load labels on map move/zoom - combined handlers
+    map.on('moveend', function() {
+      loadPlaceLabels();
+      scheduleViewportGeneration(); // Pre-generate tiles for viewport
+      ensureTileLayerOnMap();
+      // Refresh tiles to ensure all visible tiles are loaded
+      refreshVisibleTiles();
+    });
+    
     map.on('zoomend', function() {
       loadPlaceLabels();
+      scheduleViewportGeneration(); // Pre-generate tiles for new zoom level
       info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/>Click on a parcel to identify';
+      ensureTileLayerOnMap();
+    });
+    
+    // Ensure tile layer persists on map view reset and layer events
+    map.on('viewreset', ensureTileLayerOnMap);
+    map.on('layerremove', function(e) {
+      // If parcel tile layer was removed unexpectedly, re-add it after a short delay
+      if (e.layer === parcelTileLayer) {
+        console.log('Tile layer was removed, will re-add');
+        setTimeout(ensureTileLayerOnMap, 100);
+      }
     });
     
     // Initial load
+    loadStatesDistricts();
     loadPlaceLabels();
+    pregenerateViewportTiles(); // Pre-generate tiles for initial viewport
     
     // Click handler for parcel identification
     map.on('click', async function(e) {
-      const lat = e.latlng.lat;
-      const lon = e.latlng.lng;
-      
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+
       console.log('Clicked:', lat, lon);
-      
-      // Call backend identify API
+
+    // Call backend identify API
       try {
-        const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;
-        const response = await fetch(url);
-        const data = await response.json();
-        
+    const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;
+    const response = await fetch(url);
+    const data = await response.json();
+
         if (data.status !== 'ok') {
           info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/><span style="color: red;">No parcel found</span>';
-          return;
-        }
-        
-        // Remove old highlighted parcel if any
-        if (highlightLayer) {
-          map.removeLayer(highlightLayer);
-        }
-        
-        // Add highlighted parcel geometry
-        highlightLayer = L.geoJSON(data.geometry, {
-          style: {
+      return;
+    }
+
+    // Remove old highlighted parcel if any
+    if (highlightLayer) {
+      map.removeLayer(highlightLayer);
+    }
+
+    // Add highlighted parcel geometry
+    highlightLayer = L.geoJSON(data.geometry, {
+      style: {
             color: 'yellow',
-            weight: 3,
+        weight: 3,
             fillColor: 'orange',
             fillOpacity: 0.3
-          }
-        }).addTo(map);
-        
-        // Zoom to parcel
-        map.fitBounds(highlightLayer.getBounds(), { maxZoom: 17 });
-        
+      }
+    }).addTo(map);
+
+    // Zoom to parcel
+    map.fitBounds(highlightLayer.getBounds(), { maxZoom: 17 });
+
         // Update info panel with parcel details
         const attrs = data.attributes;
         info._div.innerHTML = '<b>Parcel Information</b>' +
@@ -157,7 +550,7 @@
         console.error('Error identifying parcel:', error);
         info._div.innerHTML = '<b>Parcel Identification</b><br/>Cadastral Mapping<br/>Zoom: ' + map.getZoom() + '<br/><span style="color: red;">Error: ' + error.message + '</span>';
       }
-    });
-  </script>
+  });
+</script>
 </body>
 </html>

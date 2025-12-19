@@ -30,3 +30,11 @@ def latlon_to_tile(lat: float, lon: float, zoom: int):
     x = int((lon + 180.0) / 360.0 * n)
     y = int((1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi) / 2.0 * n)
     return x, y
+
+
+def bounds_to_tile_xyz(lon: float, lat: float, zoom: int):
+    """
+    Converts geographic coordinates to XYZ tile indices.
+    Alias for latlon_to_tile for consistency.
+    """
+    return latlon_to_tile(lat, lon, zoom)
