@@ -1,0 +1,149 @@
+version: '3.8'
+
+services:
+  # PostgreSQL/PostGIS Database
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: parcel_db
+    environment:
+      POSTGRES_DB: parcels_db_new
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--auth-host=md5"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./create_tables.sql:/docker-entrypoint-initdb.d/01-create-tables.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"  # Bind to localhost only for security
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway (Main Entry Point)
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_api_gateway
+    expose:
+      - "8000"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - TILE_SERVICE_URL=http://tile-service:8001
+      - PREGEN_SERVICE_URL=http://pregenerate-service:8002
+      - IDENTIFY_SERVICE_URL=http://identify-service:8003
+    depends_on:
+      db:
+        condition: service_healthy
+      tile-service:
+        condition: service_started
+      pregenerate-service:
+        condition: service_started
+      identify-service:
+        condition: service_started
+    volumes:
+      - ./cache:/app/cache
+      - ./backend:/app/backend
+    command: uvicorn backend.services.api_gateway:app --host 0.0.0.0 --port 8000
+    restart: unless-stopped
+
+  # Tile Service (On-demand Generation)
+  tile-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_tile_service
+    expose:
+      - "8001"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./cache:/app/cache
+      - ./backend:/app/backend
+    command: uvicorn backend.services.tile_service:app --host 0.0.0.0 --port 8001
+    restart: unless-stopped
+
+  # Pre-generation Service
+  pregenerate-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_pregenerate_service
+    expose:
+      - "8002"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./cache:/app/cache
+      - ./backend:/app/backend
+    command: uvicorn backend.services.pregenerate_service:app --host 0.0.0.0 --port 8002
+    restart: unless-stopped
+
+  # Identify API Service
+  identify-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_identify_service
+    expose:
+      - "8003"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - SHAPEFILE_PATH=data/vellore/vellore_cad.shp
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data:ro
+    command: uvicorn backend.services.identify_service:app --host 0.0.0.0 --port 8003
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy (Production)
+  nginx:
+    image: nginx:1.24-alpine
+    container_name: parcel_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - api-gateway
+    restart: unless-stopped
+    networks:
+      - default
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  default:
+    name: parcel_network
