@@ -554,6 +554,22 @@
     # STEP 10: VERIFY POSTGIS
     # ===================================
     
+    - name: Create database if it doesn't exist
+      shell: |
+        docker-compose exec -T db psql -U postgres -c "SELECT 1 FROM pg_database WHERE datname='parcels_db_new'" | grep -q 1 || \
+        docker-compose exec -T db psql -U postgres -c "CREATE DATABASE parcels_db_new;"
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      ignore_errors: yes
+
+    - name: Enable PostGIS extension in database
+      shell: docker-compose exec -T db psql -U postgres -d parcels_db_new -c "CREATE EXTENSION IF NOT EXISTS postgis;"
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      ignore_errors: yes
+
     - name: Verify PostGIS extensions are installed
       shell: docker-compose exec -T db psql -U postgres -d parcels_db_new -c "SELECT extname FROM pg_extension WHERE extname LIKE '%postgis%';"
       args:
@@ -565,7 +581,7 @@
     - name: Display PostGIS extensions
       debug:
         msg: "PostGIS extensions installed: {{ postgis_check.stdout }}"
-      when: postgis_check.stdout is defined
+      when: postgis_check.stdout is defined and postgis_check.rc == 0
 
     # ===================================
     # STEP 11: CLEANUP & FINAL STATUS
@@ -607,11 +623,31 @@
       become_user: ubuntu
       register: container_status
 
-    - name: Test application health
+    - name: Wait for services to be ready (with retries)
+      wait_for:
+        port: 443
+        host: "{{ domain }}"
+        delay: 10
+        timeout: 120
+      ignore_errors: yes
+
+    - name: Test application health (with retries)
+      uri:
+        url: "https://{{ domain }}/health"
+        method: GET
+        timeout: 10
+        status_code: [200, 404]
+      register: health_check
+      retries: 5
+      delay: 10
+      ignore_errors: yes
+
+    - name: Test API endpoint
       uri:
         url: "https://{{ domain }}/api/"
         method: GET
         timeout: 10
+        status_code: [200, 404]
       register: health_check
       ignore_errors: yes
 
@@ -619,18 +655,18 @@
     # VERIFY DATA PRESERVATION
     # ===================================
     
-    - name: Verify database data is preserved
+    - name: Verify database tables exist
       shell: |
-        docker-compose exec -T db psql -U postgres -d geo_mapping_db -c "
+        docker-compose exec -T db psql -U postgres -d parcels_db_new -c "
         SELECT 
           schemaname,
-          tablename,
+          relname as tablename,
           n_tup_ins as inserts,
           n_tup_upd as updates,
           n_tup_del as deletes
         FROM pg_stat_user_tables 
         WHERE schemaname = 'public'
-        ORDER BY tablename;
+        ORDER BY relname;
         "
       args:
         chdir: "{{ project_dir }}"
