@@ -264,6 +264,31 @@
         enabled: no
       ignore_errors: yes
 
+    - name: Kill any process using port 80
+      shell: |
+        # Find and kill processes using port 80
+        PIDS=$(lsof -ti:80 2>/dev/null || true)
+        if [ -n "$PIDS" ]; then
+          echo "Killing processes using port 80: $PIDS"
+          kill -9 $PIDS 2>/dev/null || true
+          sleep 2
+        fi
+        # Also check for port 443
+        PIDS443=$(lsof -ti:443 2>/dev/null || true)
+        if [ -n "$PIDS443" ]; then
+          echo "Killing processes using port 443: $PIDS443"
+          kill -9 $PIDS443 2>/dev/null || true
+          sleep 2
+        fi
+      ignore_errors: yes
+
+    - name: Stop any existing Docker containers that might use ports 80/443
+      shell: docker-compose down --remove-orphans
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      ignore_errors: yes
+
     - name: Remove existing nginx sites that might conflict
       file:
         path: "/etc/nginx/sites-enabled/{{ domain }}"
@@ -340,11 +365,40 @@
       loop:
         - "{{ project_dir }}/logs"
 
-    - name: Build Docker containers (no cache for fresh build)
-      shell: docker-compose build --no-cache
+    - name: Build Docker containers (with cache for faster builds)
+      shell: docker-compose build --parallel
       args:
         chdir: "{{ project_dir }}"
       become_user: ubuntu
+      async: 3600
+      poll: 60
+      register: build_result
+      ignore_errors: yes
+
+    - name: Check build result
+      debug:
+        msg: "Build completed with status: {{ build_result.ansible_job_id }}"
+      when: build_result.ansible_job_id is defined
+
+    - name: Fail if build failed
+      fail:
+        msg: "Docker build failed or timed out. Check logs manually."
+      when: build_result.failed is defined and build_result.failed == true
+
+    - name: Verify ports 80 and 443 are free before starting containers
+      shell: |
+        if lsof -ti:80 >/dev/null 2>&1; then
+          echo "ERROR: Port 80 is still in use"
+          lsof -i:80
+          exit 1
+        fi
+        if lsof -ti:443 >/dev/null 2>&1; then
+          echo "ERROR: Port 443 is still in use"
+          lsof -i:443
+          exit 1
+        fi
+        echo "Ports 80 and 443 are free"
+      ignore_errors: yes
 
     - name: Start Docker containers (including nginx)
       shell: docker-compose up -d
