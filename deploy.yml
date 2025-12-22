@@ -8,7 +8,7 @@
     project_dir: "/opt/{{ project_name }}"
     temp_dir: "/tmp/{{ project_name }}_deploy"
     zip_file: "{{ project_name }}.zip"
-    domain: "gis-map.1acre.in"  # CHANGED: Updated domain name
+    domain: "gis-portal.1acre.in"  # Production domain
 
   tasks:
     # ===================================
@@ -229,17 +229,10 @@
           exit 1
         fi
 
-    - name: Update Django ALLOWED_HOSTS setting
-      lineinfile:
-        path: "{{ project_dir }}/geo_mapping/settings.py"
-        regexp: '^ALLOWED_HOSTS\s*='
-        line: "ALLOWED_HOSTS = ['{{ domain }}', '{{ ansible_default_ipv4.address }}', 'localhost', '127.0.0.1']"  # CHANGED: Added proper hosts
-
-    - name: Ensure DEBUG = False for production
-      lineinfile:
-        path: "{{ project_dir }}/geo_mapping/settings.py"
-        regexp: '^DEBUG\s*='
-        line: "DEBUG = False"
+    # Skip Django settings - This is a FastAPI project, not Django
+    - name: Skip Django settings (FastAPI project)
+      debug:
+        msg: "Skipping Django settings - This is a FastAPI project"
 
     # ===================================
     # STEP 5: SSL CERTIFICATE (SKIP - ALREADY EXISTS)
@@ -404,54 +397,24 @@
     # STEP 8: DATABASE & MINIMAL STATIC FILES
     # ===================================
     
-    - name: Run Django migrations (with retries)
-      shell: docker-compose exec -T web python manage.py migrate
-      args:
-        chdir: "{{ project_dir }}"
-      become_user: ubuntu
-      register: migration_result
-      retries: 3
-      delay: 15
-      until: migration_result.rc == 0
+    # Skip Django migrations - FastAPI doesn't use Django migrations
+    - name: Skip Django migrations (FastAPI project)
+      debug:
+        msg: "Skipping Django migrations - FastAPI project uses database setup scripts instead"
 
-    # CRITICAL: Collect ONLY essential static files (NO TILES)
-    - name: Clean old static files first
-      shell: docker-compose exec -T web rm -rf /app/staticfiles/*
-      args:
-        chdir: "{{ project_dir }}"
-      become_user: ubuntu
-      ignore_errors: yes
-
-    - name: Collect minimal static files (CSS, JS, admin only - NO TILES)
-      shell: |
-        docker-compose exec web python manage.py collectstatic --noinput --ignore='*.png' --ignore='tiles_png' --ignore='real_estate_tiles_png'
-      args:
-        chdir: "{{ project_dir }}"
-      become_user: ubuntu
-      ignore_errors: yes
+    # Skip Django collectstatic - FastAPI doesn't have static file collection
+    - name: Skip Django collectstatic (FastAPI project)
+      debug:
+        msg: "Skipping Django collectstatic - FastAPI serves static files directly"
 
     # ===================================
     # STEP 9: VERIFY S3/CLOUDFRONT CONNECTION
     # ===================================
     
-    - name: Test S3 connection
-      shell: |
-        docker-compose exec -T web python manage.py shell -c "
-        print('🔍 Testing S3 connectivity...')
-        try:
-            from maps.s3_upload_service import S3TileUploadService
-            uploader = S3TileUploadService()
-            connection = uploader.test_connection()
-            if connection['success']:
-                print(f'✅ S3 Connected: {connection[\"bucket\"]}')
-            else:
-                print(f'❌ S3 Failed: {connection[\"error\"]}')
-        except Exception as e:
-            print(f'⚠️ S3 service not available: {e}')
-        "
-      args:
-        chdir: "{{ project_dir }}"
-      become_user: ubuntu
+    # Skip S3 test - FastAPI project doesn't use Django shell
+    - name: Skip S3 connection test (FastAPI project)
+      debug:
+        msg: "Skipping S3 test - FastAPI project structure differs from Django"
       ignore_errors: yes
 
     # ===================================
@@ -459,7 +422,7 @@
     # ===================================
     
     - name: Verify PostGIS extensions are installed
-      shell: docker-compose exec -T db psql -U postgres -d geo_mapping_db -c "SELECT extname FROM pg_extension WHERE extname LIKE '%postgis%';"
+      shell: docker-compose exec -T db psql -U postgres -d parcels_db_new -c "SELECT extname FROM pg_extension WHERE extname LIKE '%postgis%';"
       args:
         chdir: "{{ project_dir }}"
       become_user: ubuntu
@@ -584,31 +547,32 @@
             ✅ Redis caching optimized for GIS
             ✅ CloudFront-ready tile serving
             ✅ SSL certificate with auto-renewal ({{ domain }})
-            ✅ Production Django settings (DEBUG=False)
+            ✅ FastAPI backend with multi-service architecture
             ✅ Data-safe deployment process
             ✅ Docker nginx with SSL (host nginx disabled)
           
-          🚀 NEXT STEPS - GENERATE TILES:
+          🚀 NEXT STEPS:
             SSH to server: ssh -i oneacre-prod.pem ubuntu@{{ ansible_default_ipv4.address }}
             Go to project: cd {{ project_dir }}
             
-            # Create the tile generation script
-            curl -o generate_tiles.sh https://raw.githubusercontent.com/your-repo/generate_tiles.sh
-            chmod +x generate_tiles.sh
+            # Check service status
+            docker-compose ps
             
-            # Generate tiles directly to CloudFront
-            ./generate_tiles.sh --city bangalore --type city
-            ./generate_tiles.sh --type real-estate
+            # View logs
+            docker-compose logs -f api-gateway
+            docker-compose logs -f tile-service
+            docker-compose logs -f identify-service
             
-            # Or use Django command directly
-            docker-compose exec web python manage.py generate_and_upload_tiles --city bangalore
+            # Run ETL pipeline if needed
+            docker-compose exec api-gateway python etl/pipeline.py --config etl/config/vellore_mapping.yaml
           
           🔧 Useful Commands:
             - Check containers: docker-compose ps
-            - View logs: docker-compose logs -f web
+            - View API Gateway logs: docker-compose logs -f api-gateway
+            - View tile service logs: docker-compose logs -f tile-service
             - View nginx logs: docker-compose logs -f nginx
-            - Django shell: docker-compose exec web python manage.py shell
-            - Database access: docker-compose exec db psql -U postgres geo_mapping_db
+            - Database access: docker-compose exec db psql -U postgres parcels_db_new
+            - Health check: curl https://{{ domain }}/health
             - Check volumes: docker volume ls
             - Monitor disk: df -h
             - Restart nginx: docker-compose restart nginx
