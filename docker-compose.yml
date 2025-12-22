@@ -39,6 +39,7 @@ services:
       - TILE_SERVICE_URL=http://tile-service:8001
       - PREGEN_SERVICE_URL=http://pregenerate-service:8002
       - IDENTIFY_SERVICE_URL=http://identify-service:8003
+      - PYTHONPATH=/app/backend:/app
     depends_on:
       db:
         condition: service_healthy
@@ -68,6 +69,7 @@ services:
       - DB_NAME=parcels_db_new
       - DB_USER=postgres
       - DB_PASSWORD=postgres
+      - PYTHONPATH=/app/backend:/app
     depends_on:
       db:
         condition: service_healthy
@@ -91,6 +93,7 @@ services:
       - DB_NAME=parcels_db_new
       - DB_USER=postgres
       - DB_PASSWORD=postgres
+      - PYTHONPATH=/app/backend:/app
     depends_on:
       db:
         condition: service_healthy
@@ -115,6 +118,7 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - SHAPEFILE_PATH=data/vellore/vellore_cad.shp
+      - PYTHONPATH=/app/backend:/app
     depends_on:
       db:
         condition: service_healthy
