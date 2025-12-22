@@ -67,12 +67,27 @@
   
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // API Base URL - Use production URL or detect from current location
-    const API_BASE_URL = window.location.hostname === 'gis-portal.1acre.in' 
-      ? 'https://gis-portal.1acre.in' 
-      : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-          ? 'http://127.0.0.1:8000'
-          : `http://${window.location.hostname}:8000`);
+    // API Base URL - Auto-detect based on current location
+    // Production: gis-portal.1acre.in (uses same domain, HTTPS)
+    // Development: localhost/127.0.0.1 (uses port 8000, HTTP)
+    // Note: Always use IPv4 (127.0.0.1) for localhost to avoid IPv6 connection issues
+    let API_BASE_URL;
+    const hostname = window.location.hostname;
+    const protocol = window.location.protocol;
+    
+    if (hostname === 'gis-portal.1acre.in') {
+      // Production: Use same domain with HTTPS (backend served via nginx on same domain)
+      API_BASE_URL = 'https://gis-portal.1acre.in';
+    } else if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::]' || hostname === '::1') {
+      // Development: Always use IPv4 (127.0.0.1) to avoid IPv6 connection issues
+      // API Gateway listens on 127.0.0.1:8000 (IPv4)
+      API_BASE_URL = 'http://127.0.0.1:8000';
+    } else {
+      // Other environments: Use same hostname with port 8000
+      API_BASE_URL = `${protocol}//${hostname}:8000`;
+    }
+    
+    console.log('API Base URL:', API_BASE_URL, '(hostname:', hostname + ')');
     
     // Default view - can be overridden via URL parameters
     // Minimum zoom is 15 (backend only supports zoom 15-18)
@@ -197,13 +212,30 @@
     
     // Load states and districts
     async function loadStatesDistricts() {
+      const url = `${API_BASE_URL}/api/states-districts`;
+      console.log('Loading states/districts from:', url);
+      
       try {
-        const response = await fetch(`${API_BASE_URL}/api/states-districts`);  // Via API Gateway
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const data = await response.json();
+        console.log('Received data:', data);
+        
+        if (!data.states || !Array.isArray(data.states)) {
+          throw new Error('Invalid response format: missing states array');
+        }
         
         const stateSelect = document.getElementById('stateSelect');
         const districtSelect = document.getElementById('districtSelect');
         const filterInfo = document.getElementById('filterInfo');
+        
+        if (!stateSelect || !districtSelect || !filterInfo) {
+          throw new Error('Required DOM elements not found');
+        }
         
         // Clear existing options (except "All")
         stateSelect.innerHTML = '<option value="">All States</option>';
@@ -243,9 +275,14 @@
           }
         });
         
+        console.log('States/districts loaded successfully');
+        
       } catch (error) {
         console.error('Error loading states/districts:', error);
-        document.getElementById('filterInfo').textContent = 'Error loading filters';
+        const filterInfo = document.getElementById('filterInfo');
+        if (filterInfo) {
+          filterInfo.textContent = `Error: ${error.message}`;
+        }
       }
     }
     
