@@ -9,3 +9,5 @@ backend/tile_server/tile_server_vector.py
 .env.local
 etl/load_vellore.py
 /cache
+oneacre-prod.pem
+*.pem

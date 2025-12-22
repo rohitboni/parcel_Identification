@@ -222,6 +222,17 @@ def generate_raster_tile(z: int, x: int, y: int, state_code=None, district_code=
         px = int((point.x - minx) / (maxx - minx) * RENDER_SIZE)
         py = int((maxy - point.y) / (maxy - miny) * RENDER_SIZE)
         draw.text((px, py), str(p["survey_num"]), fill="black", font=font)
+        # Draw text with stroke outline for better visibility and darker appearance
+        # stroke_width: 2px at render scale (will be ~1px after resize)
+        # stroke_fill: white outline makes black text stand out more
+        # draw.text(
+        #     (px, py), 
+        #     str(p["survey_num"]), 
+        #     fill="black", 
+        #     font=font,
+        #     stroke_width=int(2 * RENDER_SCALE),  # Thicker stroke for darker appearance
+        #     stroke_fill="white"  # White outline for contrast
+        # )
 
     img = img.resize((TILE_SIZE, TILE_SIZE), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
