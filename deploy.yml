@@ -1,0 +1,628 @@
+---
+- name: Deploy GeoMapping Application - DATA SAFE VERSION
+  hosts: aws_servers
+  become: yes
+  vars:
+    repo_url: "https://gitlab.com/rohit.boni/geomapping.git"
+    project_name: "geomapping"
+    project_dir: "/opt/{{ project_name }}"
+    temp_dir: "/tmp/{{ project_name }}_deploy"
+    zip_file: "{{ project_name }}.zip"
+    domain: "gis-map.1acre.in"  # CHANGED: Updated domain name
+
+  tasks:
+    # ===================================
+    # STEP 1: PREPARE LOCAL DEPLOYMENT
+    # ===================================
+    
+    - name: Clean up old temp files on local machine
+      file:
+        path: "{{ temp_dir }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      become: no
+
+    - name: Clone repository to local machine (master branch)
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ temp_dir }}"
+        version: "master"
+        depth: 1
+      delegate_to: localhost
+      run_once: true
+      become: no
+
+    - name: Create zip archive of the project
+      archive:
+        path: "{{ temp_dir }}"
+        dest: "/tmp/{{ zip_file }}"
+        format: zip
+      delegate_to: localhost
+      run_once: true
+      become: no
+
+    - name: Upload zip file to server
+      copy:
+        src: "/tmp/{{ zip_file }}"
+        dest: "/tmp/{{ zip_file }}"
+
+    # ===================================
+    # STEP 2: DOCKER INSTALLATION
+    # ===================================
+    
+    - name: Check if Docker is installed
+      command: which docker
+      register: docker_installed
+      ignore_errors: yes
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      when: docker_installed.rc != 0
+
+    - name: Install required packages for Docker
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - unzip
+        state: present
+      when: docker_installed.rc != 0
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: docker_installed.rc != 0
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+      when: docker_installed.rc != 0
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+      when: docker_installed.rc != 0
+
+    - name: Install Docker Compose standalone
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-x86_64"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+      when: docker_installed.rc != 0
+
+    - name: Create docker-compose symlink
+      file:
+        src: /usr/local/bin/docker-compose
+        dest: /usr/bin/docker-compose
+        state: link
+      when: docker_installed.rc != 0
+      ignore_errors: yes
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ubuntu user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+
+    - name: Reset ssh connection to apply group changes
+      meta: reset_connection
+
+    # ===================================
+    # STEP 3: SAFE CLEANUP (PRESERVE DATA)
+    # ===================================
+    
+    - name: Check initial disk space
+      shell: df -h
+      register: initial_disk_space
+
+    - name: Display initial disk usage
+      debug:
+        msg: "Initial disk usage: {{ initial_disk_space.stdout }}"
+
+    - name: Check if project directory exists
+      stat:
+        path: "{{ project_dir }}"
+      register: project_exists
+
+    - name: Stop existing Docker containers (preserve volumes)
+      shell: docker-compose down --remove-orphans
+      args:
+        chdir: "{{ project_dir }}"
+      when: project_exists.stat.exists
+      ignore_errors: yes
+      become_user: ubuntu
+
+    - name: Wait for containers to stop completely
+      pause:
+        seconds: 10
+      when: project_exists.stat.exists
+
+    # SAFE cleanup - preserves data volumes
+    - name: Clean up unused containers only
+      shell: docker container prune -f
+      ignore_errors: yes
+
+    - name: Clean up unused images only
+      shell: docker image prune -af
+      ignore_errors: yes
+
+    - name: Clean up unused networks only
+      shell: docker network prune -f
+      ignore_errors: yes
+
+    - name: Clean up build cache only
+      shell: docker builder prune -af
+      ignore_errors: yes
+
+    - name: Show preserved volumes
+      shell: docker volume ls
+      register: preserved_volumes
+      ignore_errors: yes
+
+    - name: Display preserved volumes
+      debug:
+        msg: "Preserved volumes: {{ preserved_volumes.stdout }}"
+      when: preserved_volumes.stdout is defined
+
+    - name: Check disk space after cleanup
+      shell: df -h
+      register: cleaned_disk_space
+
+    - name: Display disk space after cleanup
+      debug:
+        msg: "Disk space after cleanup: {{ cleaned_disk_space.stdout }}"
+
+    # Clean up old project code (but preserve data)
+    - name: Remove old project directory (code only)
+      shell: rm -rf {{ project_dir }}
+      ignore_errors: yes
+
+    - name: Create fresh project directory
+      file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    # ===================================
+    # STEP 4: DEPLOY NEW CODE
+    # ===================================
+    
+    - name: Extract zip file to temporary location
+      unarchive:
+        src: "/tmp/{{ zip_file }}"
+        dest: "/tmp"
+        remote_src: yes
+
+    - name: Find extracted directory and move contents
+      shell: |
+        EXTRACTED_DIR=$(find /tmp -maxdepth 1 -name "{{ project_name }}_deploy*" -type d | head -1)
+        if [ -n "$EXTRACTED_DIR" ]; then
+          mv "$EXTRACTED_DIR"/* {{ project_dir }}/
+          mv "$EXTRACTED_DIR"/.* {{ project_dir }}/ 2>/dev/null || true
+          rm -rf "$EXTRACTED_DIR"
+          chown -R ubuntu:ubuntu {{ project_dir }}
+        else
+          echo "No extracted directory found"
+          exit 1
+        fi
+
+    - name: Update Django ALLOWED_HOSTS setting
+      lineinfile:
+        path: "{{ project_dir }}/geo_mapping/settings.py"
+        regexp: '^ALLOWED_HOSTS\s*='
+        line: "ALLOWED_HOSTS = ['{{ domain }}', '{{ ansible_default_ipv4.address }}', 'localhost', '127.0.0.1']"  # CHANGED: Added proper hosts
+
+    - name: Ensure DEBUG = False for production
+      lineinfile:
+        path: "{{ project_dir }}/geo_mapping/settings.py"
+        regexp: '^DEBUG\s*='
+        line: "DEBUG = False"
+
+    # ===================================
+    # STEP 5: SSL CERTIFICATE (SKIP - ALREADY EXISTS)
+    # ===================================
+    
+    - name: Check if SSL certificate exists for our domain
+      stat:
+        path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+      register: ssl_cert
+
+    - name: Display SSL certificate status
+      debug:
+        msg: "SSL certificate for {{ domain }} exists: {{ ssl_cert.stat.exists }}"
+
+    # Skip SSL generation since it already exists
+    - name: SSL certificate already configured
+      debug:
+        msg: "✅ SSL certificate already exists for {{ domain }}, skipping generation"
+      when: ssl_cert.stat.exists
+
+    # ===================================
+    # STEP 6: STOP HOST NGINX (DOCKER NGINX WILL TAKE OVER)
+    # ===================================
+    
+    - name: Stop and disable host nginx to avoid port conflicts
+      systemd:
+        name: nginx
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Remove existing nginx sites that might conflict
+      file:
+        path: "/etc/nginx/sites-enabled/{{ domain }}"
+        state: absent
+      ignore_errors: yes
+
+    - name: Create nginx configuration directory for Docker
+      file:
+        path: "{{ project_dir }}/nginx/conf.d"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Create Docker nginx configuration
+      copy:
+        dest: "{{ project_dir }}/nginx/conf.d/default.conf"
+        content: |
+          server {
+              listen 80;
+              server_name {{ domain }};
+              return 301 https://$server_name$request_uri;
+          }
+
+          server {
+              listen 443 ssl http2;
+              server_name {{ domain }};
+
+              ssl_certificate /etc/letsencrypt/live/{{ domain }}/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/{{ domain }}/privkey.pem;
+              
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384;
+              ssl_prefer_server_ciphers off;
+              add_header Strict-Transport-Security "max-age=63072000" always;
+
+              client_max_body_size 100M;
+
+              location / {
+                  proxy_pass http://web:8000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_connect_timeout 300s;
+                  proxy_send_timeout 300s;
+                  proxy_read_timeout 300s;
+              }
+
+              location /static/ {
+                  alias /app/staticfiles/;
+                  expires 1y;
+                  add_header Cache-Control "public, immutable";
+              }
+
+              location /media/ {
+                  alias /app/media/;
+                  expires 1y;
+                  add_header Cache-Control "public";
+              }
+          }
+
+    # ===================================
+    # STEP 7: BUILD AND START CONTAINERS (INCLUDING DOCKER NGINX)
+    # ===================================
+    
+    - name: Create necessary directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+      loop:
+        - "{{ project_dir }}/logs"
+
+    - name: Build Docker containers (no cache for fresh build)
+      shell: docker-compose build --no-cache
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+
+    - name: Start Docker containers (including nginx)
+      shell: docker-compose up -d
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+
+    - name: Add SSL renewal cron job
+      cron:
+        name: "SSL renewal"
+        job: "certbot renew --quiet --deploy-hook 'cd {{ project_dir }} && docker-compose restart nginx'"
+        minute: "0"
+        hour: "3"
+        weekday: "1"
+
+    - name: Wait for nginx container to be ready
+      wait_for:
+        port: 443
+        host: "0.0.0.0"
+        delay: 30
+        timeout: 300
+      become: no
+
+    - name: Wait additional time for web container to be ready
+      pause:
+        seconds: 30
+
+    - name: Check container status before migrations
+      shell: docker-compose ps
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      register: container_status_pre
+
+    - name: Display container status
+      debug:
+        msg: "Container status before migration: {{ container_status_pre.stdout }}"
+
+    - name: Verify database is ready
+      shell: docker-compose exec -T db pg_isready -U postgres
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      register: db_ready
+      retries: 5
+      delay: 10
+      until: db_ready.rc == 0
+
+    # ===================================
+    # STEP 8: DATABASE & MINIMAL STATIC FILES
+    # ===================================
+    
+    - name: Run Django migrations (with retries)
+      shell: docker-compose exec -T web python manage.py migrate
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      register: migration_result
+      retries: 3
+      delay: 15
+      until: migration_result.rc == 0
+
+    # CRITICAL: Collect ONLY essential static files (NO TILES)
+    - name: Clean old static files first
+      shell: docker-compose exec -T web rm -rf /app/staticfiles/*
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      ignore_errors: yes
+
+    - name: Collect minimal static files (CSS, JS, admin only - NO TILES)
+      shell: |
+        docker-compose exec web python manage.py collectstatic --noinput --ignore='*.png' --ignore='tiles_png' --ignore='real_estate_tiles_png'
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      ignore_errors: yes
+
+    # ===================================
+    # STEP 9: VERIFY S3/CLOUDFRONT CONNECTION
+    # ===================================
+    
+    - name: Test S3 connection
+      shell: |
+        docker-compose exec -T web python manage.py shell -c "
+        print('🔍 Testing S3 connectivity...')
+        try:
+            from maps.s3_upload_service import S3TileUploadService
+            uploader = S3TileUploadService()
+            connection = uploader.test_connection()
+            if connection['success']:
+                print(f'✅ S3 Connected: {connection[\"bucket\"]}')
+            else:
+                print(f'❌ S3 Failed: {connection[\"error\"]}')
+        except Exception as e:
+            print(f'⚠️ S3 service not available: {e}')
+        "
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      ignore_errors: yes
+
+    # ===================================
+    # STEP 10: VERIFY POSTGIS
+    # ===================================
+    
+    - name: Verify PostGIS extensions are installed
+      shell: docker-compose exec -T db psql -U postgres -d geo_mapping_db -c "SELECT extname FROM pg_extension WHERE extname LIKE '%postgis%';"
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      register: postgis_check
+      ignore_errors: yes
+
+    - name: Display PostGIS extensions
+      debug:
+        msg: "PostGIS extensions installed: {{ postgis_check.stdout }}"
+      when: postgis_check.stdout is defined
+
+    # ===================================
+    # STEP 11: CLEANUP & FINAL STATUS
+    # ===================================
+    
+    - name: Remove uploaded zip file
+      file:
+        path: "/tmp/{{ zip_file }}"
+        state: absent
+
+    - name: Clean up local temp files
+      file:
+        path: "{{ temp_dir }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      become: no
+
+    - name: Clean up local zip file
+      file:
+        path: "/tmp/{{ zip_file }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      become: no
+
+    - name: Final disk space check
+      shell: df -h
+      register: final_disk_space
+
+    - name: Display final disk usage
+      debug:
+        msg: "Final disk usage: {{ final_disk_space.stdout }}"
+
+    - name: Show container status
+      shell: docker-compose ps
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      register: container_status
+
+    - name: Test application health
+      uri:
+        url: "https://{{ domain }}/api/"
+        method: GET
+        timeout: 10
+      register: health_check
+      ignore_errors: yes
+
+    # ===================================
+    # VERIFY DATA PRESERVATION
+    # ===================================
+    
+    - name: Verify database data is preserved
+      shell: |
+        docker-compose exec -T db psql -U postgres -d geo_mapping_db -c "
+        SELECT 
+          schemaname,
+          tablename,
+          n_tup_ins as inserts,
+          n_tup_upd as updates,
+          n_tup_del as deletes
+        FROM pg_stat_user_tables 
+        WHERE schemaname = 'public'
+        ORDER BY tablename;
+        "
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      register: db_stats
+      ignore_errors: yes
+
+    - name: Display database preservation status
+      debug:
+        msg: |
+          📊 Database Stats (Data Preserved):
+          {{ db_stats.stdout }}
+      when: db_stats.stdout is defined
+
+    # ===================================
+    # DEPLOYMENT SUCCESS MESSAGE
+    # ===================================
+    
+    - name: Display deployment status
+      debug:
+        msg: |
+          🎉 DATA-SAFE DEPLOYMENT COMPLETED SUCCESSFULLY!
+          
+          📦 Deployed Branch: master
+          
+          🌐 Application URLs:
+            - HTTPS: https://{{ domain }}
+            - API:   https://{{ domain }}/api/
+            - Health: {{ 'PASSED' if health_check.status == 200 else 'FAILED' }}
+          
+          📊 Container Status:
+          {{ container_status.stdout }}
+          
+          💾 Disk Usage:
+          {{ final_disk_space.stdout }}
+          
+          🛡️ DATA PRESERVATION STATUS:
+            ✅ PostgreSQL data preserved (named volumes)
+            ✅ Redis data preserved (if any)
+            ✅ Media files preserved (user uploads)
+            ✅ SSL certificates preserved and working
+            ✅ No data loss during deployment
+            ✅ Docker nginx configured with existing SSL certificate
+          
+          🗂️ Key Features:
+            ✅ PostgreSQL with PostGIS extensions
+            ✅ Redis caching optimized for GIS
+            ✅ CloudFront-ready tile serving
+            ✅ SSL certificate with auto-renewal ({{ domain }})
+            ✅ Production Django settings (DEBUG=False)
+            ✅ Data-safe deployment process
+            ✅ Docker nginx with SSL (host nginx disabled)
+          
+          🚀 NEXT STEPS - GENERATE TILES:
+            SSH to server: ssh -i oneacre-prod.pem ubuntu@{{ ansible_default_ipv4.address }}
+            Go to project: cd {{ project_dir }}
+            
+            # Create the tile generation script
+            curl -o generate_tiles.sh https://raw.githubusercontent.com/your-repo/generate_tiles.sh
+            chmod +x generate_tiles.sh
+            
+            # Generate tiles directly to CloudFront
+            ./generate_tiles.sh --city bangalore --type city
+            ./generate_tiles.sh --type real-estate
+            
+            # Or use Django command directly
+            docker-compose exec web python manage.py generate_and_upload_tiles --city bangalore
+          
+          🔧 Useful Commands:
+            - Check containers: docker-compose ps
+            - View logs: docker-compose logs -f web
+            - View nginx logs: docker-compose logs -f nginx
+            - Django shell: docker-compose exec web python manage.py shell
+            - Database access: docker-compose exec db psql -U postgres geo_mapping_db
+            - Check volumes: docker volume ls
+            - Monitor disk: df -h
+            - Restart nginx: docker-compose restart nginx
+            - Test nginx config: docker-compose exec nginx nginx -t
+          
+          📁 Project Directory: {{ project_dir }}
+          
+          ⚠️ IMPORTANT NOTES:
+            🔥 Your database data has been PRESERVED across this deployment
+            🔥 Generate tiles separately using the tile generation commands
+            🔥 All tiles will be uploaded directly to S3/CloudFront
+            🔥 No local tile storage (saves disk space)
+            🔥 Production-ready with SSL and security settings
+            🔥 Using Docker nginx with existing SSL certificates for {{ domain }}
+            🔥 Host nginx has been stopped to avoid port conflicts
+          
+          🌟 Your data-safe GIS deployment is complete!

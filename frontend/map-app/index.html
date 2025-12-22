@@ -67,6 +67,13 @@
   
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
+    // API Base URL - Use production URL or detect from current location
+    const API_BASE_URL = window.location.hostname === 'gis-portal.1acre.in' 
+      ? 'https://gis-portal.1acre.in' 
+      : (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+          ? 'http://127.0.0.1:8000'
+          : `http://${window.location.hostname}:8000`);
+    
     // Default view - can be overridden via URL parameters
     // Minimum zoom is 15 (backend only supports zoom 15-18)
     const urlParams = new URLSearchParams(window.location.search);
@@ -133,8 +140,8 @@
       const filterParams = params.toString();
       
       const tileUrlTemplate = filterParams 
-        ? `http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png?${filterParams}`
-        : 'http://127.0.0.1:8000/tiles/{z}/{x}/{y}.png';  // Via API Gateway
+        ? `${API_BASE_URL}/tiles/{z}/{x}/{y}.png?${filterParams}`
+        : `${API_BASE_URL}/tiles/{z}/{x}/{y}.png`;  // Via API Gateway
       
       // Only recreate if URL template actually changed or forced
       const needsUpdate = forceRecreate || 
@@ -191,7 +198,7 @@
     // Load states and districts
     async function loadStatesDistricts() {
       try {
-        const response = await fetch('http://127.0.0.1:8000/api/states-districts');  // Via API Gateway
+        const response = await fetch(`${API_BASE_URL}/api/states-districts`);  // Via API Gateway
         const data = await response.json();
         
         const stateSelect = document.getElementById('stateSelect');
@@ -275,7 +282,7 @@
           if (currentStateCode) params.append('state_code', currentStateCode);
           if (currentDistrictCode) params.append('district_code', currentDistrictCode);
           
-          const response = await fetch(`http://127.0.0.1:8000/api/bounds?${params.toString()}`);  // Via API Gateway
+          const response = await fetch(`${API_BASE_URL}/api/bounds?${params.toString()}`);  // Via API Gateway
           const data = await response.json();
           
           if (data.bounds) {
@@ -335,7 +342,7 @@
         params.append('surrounding_radius', '2'); // Generate 2 rings of surrounding tiles
         
         // Call pre-generation endpoint (non-blocking) - Via API Gateway
-        fetch(`http://127.0.0.1:8000/api/pregenerate-viewport?${params.toString()}`)
+        fetch(`${API_BASE_URL}/api/pregenerate-viewport?${params.toString()}`)
           .then(response => response.json())
           .then(data => {
             if (data.generated || data.cached) {
@@ -397,7 +404,7 @@
 
     // Call backend identify API
       try {
-    const url = `http://127.0.0.1:8000/api/identify?lat=${lat}&lon=${lon}`;  // Via API Gateway
+    const url = `${API_BASE_URL}/api/identify?lat=${lat}&lon=${lon}`;  // Via API Gateway
     const response = await fetch(url);
     const data = await response.json();
 
