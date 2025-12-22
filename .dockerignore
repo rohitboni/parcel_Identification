@@ -1,0 +1,62 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Cache directory (mounted as volume, don't copy)
+cache/
+*.png
+*.pbf
+
+# Data directory (mounted as volume if needed)
+data/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Environment files (will be set via docker-compose)
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# Docker files (don't copy into image)
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Other
+*.sql
+deploy.yml
+start_services.sh
+setup_*.py
+migrate_*.py
+fix_*.py
+pregenerate_tiles.py
+
+
