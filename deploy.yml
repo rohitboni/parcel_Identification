@@ -321,17 +321,7 @@
         group: ubuntu
         mode: '0755'
 
-    - name: Copy Docker nginx configuration from project
-      copy:
-        src: "nginx/conf.d/default.conf"
-        dest: "{{ project_dir }}/nginx/conf.d/default.conf"
-        remote_src: no
-      delegate_to: localhost
-      run_once: true
-      become: no
-      when: project_dir is defined
-
-    - name: Ensure nginx config exists (fallback if copy fails)
+    - name: Create Docker nginx configuration (FastAPI with api-gateway)
       copy:
         dest: "{{ project_dir }}/nginx/conf.d/default.conf"
         content: |
