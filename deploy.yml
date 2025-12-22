@@ -365,24 +365,43 @@
       loop:
         - "{{ project_dir }}/logs"
 
+    - name: Show build progress message
+      debug:
+        msg: |
+          🏗️  Starting Docker build (this may take 10-30 minutes for first build)...
+          Building services: api-gateway, tile-service, pregenerate-service, identify-service, nginx
+          You can check progress on server: docker-compose -f {{ project_dir }}/docker-compose.yml ps
+
     - name: Build Docker containers (with cache for faster builds)
-      shell: docker-compose build --parallel
+      shell: docker-compose build --parallel 2>&1 | tee /tmp/docker-build.log
       args:
         chdir: "{{ project_dir }}"
       become_user: ubuntu
       async: 3600
       poll: 60
       register: build_result
-      ignore_errors: yes
 
     - name: Check build result
       debug:
-        msg: "Build completed with status: {{ build_result.ansible_job_id }}"
+        msg: "Build job ID: {{ build_result.ansible_job_id }}, Finished: {{ build_result.finished }}, Failed: {{ build_result.failed | default(false) }}"
       when: build_result.ansible_job_id is defined
+
+    - name: Show build log tail if available
+      shell: tail -50 /tmp/docker-build.log 2>/dev/null || echo "Build log not available yet"
+      args:
+        chdir: "{{ project_dir }}"
+      become_user: ubuntu
+      register: build_log
+      when: build_result.finished == 1
+
+    - name: Display build log
+      debug:
+        var: build_log.stdout_lines
+      when: build_result.finished == 1 and build_log.stdout_lines is defined
 
     - name: Fail if build failed
       fail:
-        msg: "Docker build failed or timed out. Check logs manually."
+        msg: "Docker build failed. Check logs: docker-compose logs on server or /tmp/docker-build.log"
       when: build_result.failed is defined and build_result.failed == true
 
     - name: Verify ports 80 and 443 are free before starting containers
