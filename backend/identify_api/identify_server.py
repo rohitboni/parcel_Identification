@@ -196,29 +196,29 @@ def get_place_labels(
         
         # Get ALL districts
         district_query = f"""
-                SELECT 
-                    district_name as name,
-                    ST_X(ST_Centroid(ST_Union(geom))) as lon,
-                    ST_Y(ST_Centroid(ST_Union(geom))) as lat,
+            SELECT 
+                district_name as name,
+                ST_X(ST_Centroid(ST_Union(geom))) as lon,
+                ST_Y(ST_Centroid(ST_Union(geom))) as lat,
                 'district' as type,
                 COUNT(*) as parcel_count
-                FROM {TABLE_MASTER}
-                WHERE district_name IS NOT NULL{where_clause}
-                GROUP BY district_name
-            """
+            FROM {TABLE_MASTER}
+            WHERE district_name IS NOT NULL{where_clause}
+            GROUP BY district_name
+        """
         
         # Get ALL villages
         village_query = f"""
-                SELECT 
-                    COALESCE(village_name, district_name) as name,
-                    ST_X(ST_Centroid(ST_Union(geom))) as lon,
-                    ST_Y(ST_Centroid(ST_Union(geom))) as lat,
+            SELECT 
+                COALESCE(village_name, district_name) as name,
+                ST_X(ST_Centroid(ST_Union(geom))) as lon,
+                ST_Y(ST_Centroid(ST_Union(geom))) as lat,
                 'village' as type,
                 COUNT(*) as parcel_count
-                FROM {TABLE_MASTER}
-                WHERE (village_name IS NOT NULL OR district_name IS NOT NULL){where_clause}
-                GROUP BY COALESCE(village_name, district_name)
-            """
+            FROM {TABLE_MASTER}
+            WHERE (village_name IS NOT NULL OR district_name IS NOT NULL){where_clause}
+            GROUP BY COALESCE(village_name, district_name)
+        """
         
         # Execute queries
         if params:
