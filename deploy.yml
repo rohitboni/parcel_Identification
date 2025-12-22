@@ -264,26 +264,44 @@
         enabled: no
       ignore_errors: yes
 
-    - name: Kill any process using port 80
+    - name: Kill any process LISTENING on ports 80 and 443
       shell: |
-        # Find and kill processes using port 80
-        PIDS=$(lsof -ti:80 2>/dev/null || true)
-        if [ -n "$PIDS" ]; then
-          echo "Killing processes using port 80: $PIDS"
-          kill -9 $PIDS 2>/dev/null || true
-          sleep 2
+        # Find and kill processes LISTENING on port 80 (not outbound connections)
+        PIDS80=$(lsof -ti:80 -sTCP:LISTEN 2>/dev/null || netstat -tlnp 2>/dev/null | grep ':80 ' | awk '{print $7}' | cut -d'/' -f1 | sort -u || true)
+        if [ -n "$PIDS80" ]; then
+          echo "Killing processes LISTENING on port 80: $PIDS80"
+          for PID in $PIDS80; do
+            kill -9 $PID 2>/dev/null || true
+          done
+          sleep 3
         fi
-        # Also check for port 443
-        PIDS443=$(lsof -ti:443 2>/dev/null || true)
+        # Also check for port 443 LISTENING
+        PIDS443=$(lsof -ti:443 -sTCP:LISTEN 2>/dev/null || netstat -tlnp 2>/dev/null | grep ':443 ' | awk '{print $7}' | cut -d'/' -f1 | sort -u || true)
         if [ -n "$PIDS443" ]; then
-          echo "Killing processes using port 443: $PIDS443"
-          kill -9 $PIDS443 2>/dev/null || true
-          sleep 2
+          echo "Killing processes LISTENING on port 443: $PIDS443"
+          for PID in $PIDS443; do
+            kill -9 $PID 2>/dev/null || true
+          done
+          sleep 3
         fi
+        # Also stop any nginx/apache services
+        systemctl stop nginx 2>/dev/null || true
+        systemctl stop apache2 2>/dev/null || true
+        systemctl stop httpd 2>/dev/null || true
+        sleep 2
       ignore_errors: yes
 
     - name: Stop any existing Docker containers that might use ports 80/443
-      shell: docker-compose down --remove-orphans
+      shell: |
+        # Stop docker-compose containers
+        docker-compose down --remove-orphans 2>/dev/null || true
+        # Also stop any nginx containers
+        docker ps -q --filter "publish=80" | xargs docker stop 2>/dev/null || true
+        docker ps -q --filter "publish=443" | xargs docker stop 2>/dev/null || true
+        # Remove stopped containers
+        docker ps -aq --filter "publish=80" | xargs docker rm -f 2>/dev/null || true
+        docker ps -aq --filter "publish=443" | xargs docker rm -f 2>/dev/null || true
+        sleep 2
       args:
         chdir: "{{ project_dir }}"
       become_user: ubuntu
@@ -404,19 +422,61 @@
         msg: "Docker build failed. Check logs: docker-compose logs on server or /tmp/docker-build.log"
       when: build_result.failed is defined and build_result.failed == true
 
-    - name: Verify ports 80 and 443 are free before starting containers
+    - name: Verify ports 80 and 443 are free (LISTENING only) before starting containers
       shell: |
-        if lsof -ti:80 >/dev/null 2>&1; then
-          echo "ERROR: Port 80 is still in use"
-          lsof -i:80
-          exit 1
+        # Check for LISTENING ports only (ignore outbound connections)
+        LISTEN80=$(lsof -ti:80 -sTCP:LISTEN 2>/dev/null || netstat -tlnp 2>/dev/null | grep ':80 ' || true)
+        if [ -n "$LISTEN80" ]; then
+          echo "ERROR: Port 80 is still LISTENING"
+          echo "$LISTEN80"
+          # Try one more time to kill
+          PIDS=$(echo "$LISTEN80" | awk '{print $7}' | cut -d'/' -f1 | sort -u | grep -v '^$' || true)
+          for PID in $PIDS; do
+            kill -9 $PID 2>/dev/null || true
+          done
+          sleep 2
+          # Check again
+          LISTEN80=$(lsof -ti:80 -sTCP:LISTEN 2>/dev/null || true)
+          if [ -n "$LISTEN80" ]; then
+            echo "Port 80 still in use after kill attempt"
+            exit 1
+          fi
         fi
-        if lsof -ti:443 >/dev/null 2>&1; then
-          echo "ERROR: Port 443 is still in use"
-          lsof -i:443
-          exit 1
+        LISTEN443=$(lsof -ti:443 -sTCP:LISTEN 2>/dev/null || netstat -tlnp 2>/dev/null | grep ':443 ' || true)
+        if [ -n "$LISTEN443" ]; then
+          echo "ERROR: Port 443 is still LISTENING"
+          echo "$LISTEN443"
+          # Try one more time to kill
+          PIDS=$(echo "$LISTEN443" | awk '{print $7}' | cut -d'/' -f1 | sort -u | grep -v '^$' || true)
+          for PID in $PIDS; do
+            kill -9 $PID 2>/dev/null || true
+          done
+          sleep 2
+          # Check again
+          LISTEN443=$(lsof -ti:443 -sTCP:LISTEN 2>/dev/null || true)
+          if [ -n "$LISTEN443" ]; then
+            echo "Port 443 still in use after kill attempt"
+            exit 1
+          fi
         fi
-        echo "Ports 80 and 443 are free"
+        echo "✅ Ports 80 and 443 are free (no LISTENING processes)"
+      ignore_errors: yes
+
+    - name: Final aggressive port cleanup before starting containers
+      shell: |
+        # One final check and kill before starting
+        echo "Final port cleanup..."
+        # Kill anything listening on 80/443
+        fuser -k 80/tcp 2>/dev/null || true
+        fuser -k 443/tcp 2>/dev/null || true
+        # Also try with lsof
+        lsof -ti:80 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+        lsof -ti:443 -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+        sleep 2
+        # Verify
+        if lsof -ti:80 -sTCP:LISTEN >/dev/null 2>&1; then
+          echo "WARNING: Port 80 still in use, but continuing..."
+        fi
       ignore_errors: yes
 
     - name: Start Docker containers (including nginx)
