@@ -373,6 +373,15 @@
               # Client max body size
               client_max_body_size 100M;
 
+              # Root location - proxy to API Gateway (for API docs or frontend)
+              location / {
+                  proxy_pass http://api-gateway:8000;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+
               # API Gateway - Proxy all API requests
               location /api/ {
                   proxy_pass http://api-gateway:8000;

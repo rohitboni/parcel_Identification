@@ -21,6 +21,9 @@ ENV GEOS_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/libgeos_c.so
 
 WORKDIR /app
 
+# Set PYTHONPATH to include backend directory for imports
+ENV PYTHONPATH=/app/backend:/app:$PYTHONPATH
+
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
