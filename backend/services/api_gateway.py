@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, JSONResponse
 import httpx
+import os
 
 app = FastAPI(title="Parcel MVP API Gateway", version="1.0")
 
@@ -19,10 +20,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Backend service URLs
-TILE_SERVICE_URL = "http://127.0.0.1:8001"  # On-demand tile generation
-PREGEN_SERVICE_URL = "http://127.0.0.1:8002"  # Pre-generation service
-IDENTIFY_SERVICE_URL = "http://127.0.0.1:8003"  # Identify API
+# Backend service URLs (can be overridden via environment variables)
+TILE_SERVICE_URL = os.getenv("TILE_SERVICE_URL", "http://127.0.0.1:8001")  # On-demand tile generation
+PREGEN_SERVICE_URL = os.getenv("PREGEN_SERVICE_URL", "http://127.0.0.1:8002")  # Pre-generation service
+IDENTIFY_SERVICE_URL = os.getenv("IDENTIFY_SERVICE_URL", "http://127.0.0.1:8003")  # Identify API
 
 # HTTP client for proxying requests
 http_client = httpx.AsyncClient(timeout=30.0)
