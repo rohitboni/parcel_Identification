@@ -4,7 +4,7 @@
 # Configuration
 # Try to find SSH key in common locations
 if [ -f "oneacre-prod.pem" ]; then
-    SSH_KEY="oneacre-prod.pem"
+SSH_KEY="oneacre-prod.pem"
 elif [ -f "$HOME/.ssh/oneacre-prod.pem" ]; then
     SSH_KEY="$HOME/.ssh/oneacre-prod.pem"
 elif [ -f "/Users/rohitboni/.ssh/oneacre-prod.pem" ]; then
