@@ -11,3 +11,4 @@ etl/load_vellore.py
 /cache
 oneacre-prod.pem
 *.pem
+.env
