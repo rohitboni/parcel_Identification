@@ -286,6 +286,68 @@
       }
     }
     
+    // Check if tiles exist in S3 for a district
+    async function checkDistrictTiles(stateCode, districtCode) {
+      if (!stateCode || !districtCode) {
+        return { exists: false };
+      }
+      
+      try {
+        const url = `${API_BASE_URL}/api/check-district-tiles?state_code=${encodeURIComponent(stateCode)}&district_code=${encodeURIComponent(districtCode)}&zoom=15`;
+        console.log('Checking district tiles:', url);
+        
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('District tiles check result:', data);
+        return data;
+      } catch (error) {
+        console.error('Error checking district tiles:', error);
+        return { exists: false, error: error.message };
+      }
+    }
+    
+    // Generate tiles for a district
+    async function generateDistrictTiles(stateCode, districtCode) {
+      if (!stateCode || !districtCode) {
+        return { status: 'error', message: 'State and district codes are required' };
+      }
+      
+      try {
+        const url = `${API_BASE_URL}/api/generate-district-tiles?state_code=${encodeURIComponent(stateCode)}&district_code=${encodeURIComponent(districtCode)}&zoom=15&max_tiles=1000`;
+        console.log('Generating district tiles:', url);
+        
+        const filterInfo = document.getElementById('filterInfo');
+        if (filterInfo) {
+          filterInfo.textContent = `Generating tiles for district... Please wait...`;
+        }
+        
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('District tiles generation result:', data);
+        
+        if (filterInfo) {
+          filterInfo.textContent = `Tiles generated: ${data.generated || 0} tiles`;
+        }
+        
+        return data;
+      } catch (error) {
+        console.error('Error generating district tiles:', error);
+        const filterInfo = document.getElementById('filterInfo');
+        if (filterInfo) {
+          filterInfo.textContent = `Error generating tiles: ${error.message}`;
+        }
+        return { status: 'error', message: error.message };
+      }
+    }
+    
     // Apply filter button
     document.getElementById('applyFilter').addEventListener('click', async function() {
       const newStateCode = document.getElementById('stateSelect').value;
@@ -299,6 +361,29 @@
         currentStateCode = newStateCode;
         currentDistrictCode = newDistrictCode;
         
+        // If district is selected, check and generate tiles if needed
+        if (newStateCode && newDistrictCode) {
+          const filterInfo = document.getElementById('filterInfo');
+          if (filterInfo) {
+            filterInfo.textContent = `Checking tiles for district...`;
+          }
+          
+          // Check if tiles exist
+          const checkResult = await checkDistrictTiles(newStateCode, newDistrictCode);
+          
+          if (!checkResult.exists || (checkResult.coverage_estimate && checkResult.coverage_estimate < 50)) {
+            // Tiles don't exist or coverage is low, generate them
+            console.log('Tiles not found or low coverage, generating tiles...');
+            await generateDistrictTiles(newStateCode, newDistrictCode);
+          } else {
+            console.log(`Tiles exist (${checkResult.coverage_estimate}% coverage)`);
+            const filterInfo = document.getElementById('filterInfo');
+            if (filterInfo) {
+              filterInfo.textContent = `Tiles available (${checkResult.coverage_estimate}% coverage)`;
+            }
+          }
+        }
+        
         // Update tile layer with new filters
         updateParcelTileLayer();
       }
@@ -309,8 +394,10 @@
       const stateText = stateSelect.options[stateSelect.selectedIndex].text.split(' (')[0];
       const districtText = districtSelect.options[districtSelect.selectedIndex].text.split(' (')[0];
       
-      document.getElementById('filterInfo').textContent = 
-        `Filter: ${stateText}${currentDistrictCode ? ' > ' + districtText : ''}`;
+      const filterInfo = document.getElementById('filterInfo');
+      if (filterInfo && !filterInfo.textContent.includes('Generating') && !filterInfo.textContent.includes('Checking')) {
+        filterInfo.textContent = `Filter: ${stateText}${currentDistrictCode ? ' > ' + districtText : ''}`;
+      }
       
       // Zoom to selected area (only if filters changed)
       if (filtersChanged) {

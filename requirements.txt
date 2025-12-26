@@ -5,6 +5,7 @@ anyio==4.11.0
 asttokens==3.0.1
 asyncpg==0.30.0
 attrs==25.4.0
+boto3==1.35.0
 certifi==2025.10.5
 click==8.3.0
 click-plugins==1.1.1.2

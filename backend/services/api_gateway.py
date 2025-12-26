@@ -119,6 +119,54 @@ async def pregenerate_viewport(request: Request):
         raise HTTPException(status_code=500, detail=f"Gateway error: {str(e)}")
 
 
+@app.get("/api/check-district-tiles")
+async def check_district_tiles(request: Request):
+    """
+    Proxy district tile check requests to pre-generation service (Service 2)
+    Route: /api/check-district-tiles -> http://127.0.0.1:8002/api/check-district-tiles
+    """
+    try:
+        query_params = dict(request.query_params)
+        url = f"{PREGEN_SERVICE_URL}/api/check-district-tiles"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, params=query_params)
+            return JSONResponse(
+                content=response.json(),
+                status_code=response.status_code
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Pre-generation service timeout")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Pre-generation service error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gateway error: {str(e)}")
+
+
+@app.get("/api/generate-district-tiles")
+async def generate_district_tiles(request: Request):
+    """
+    Proxy district tile generation requests to pre-generation service (Service 2)
+    Route: /api/generate-district-tiles -> http://127.0.0.1:8002/api/generate-district-tiles
+    """
+    try:
+        query_params = dict(request.query_params)
+        url = f"{PREGEN_SERVICE_URL}/api/generate-district-tiles"
+        
+        async with httpx.AsyncClient(timeout=3600.0) as client:  # Long timeout for generation
+            response = await client.get(url, params=query_params)
+            return JSONResponse(
+                content=response.json(),
+                status_code=response.status_code
+            )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Pre-generation service timeout")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Pre-generation service error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gateway error: {str(e)}")
+
+
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 async def proxy_api(request: Request, path: str):
     """
