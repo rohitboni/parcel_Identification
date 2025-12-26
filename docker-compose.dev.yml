@@ -1,0 +1,165 @@
+version: '3.8'
+
+services:
+  # PostgreSQL/PostGIS Database
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: parcel_db_dev
+    environment:
+      POSTGRES_DB: parcels_db_new
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_INITDB_ARGS: "--auth-host=md5"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./create_tables.sql:/docker-entrypoint-initdb.d/01-create-tables.sql:ro
+    ports:
+      - "5432:5432"  # Expose for local development
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway (Main Entry Point)
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_api_gateway_dev
+    ports:
+      - "8000:8000"  # Expose for local access
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - TILE_SERVICE_URL=http://tile-service:8001
+      - PREGEN_SERVICE_URL=http://pregenerate-service:8002
+      - IDENTIFY_SERVICE_URL=http://identify-service:8003
+      # AWS S3 Configuration (loaded from .env file)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_REGION_NAME=ap-south-1
+      - AWS_STORAGE_BUCKET_NAME=cadastrals-data
+      # CloudFront Configuration
+      - CLOUDFRONT_DOMAIN=df77x5vpgut6a.cloudfront.net
+      - USE_CLOUDFRONT=True
+    depends_on:
+      db:
+        condition: service_healthy
+      tile-service:
+        condition: service_started
+      pregenerate-service:
+        condition: service_started
+      identify-service:
+        condition: service_started
+    volumes:
+      - ./cache:/app/cache
+      - ./backend:/app/backend
+    command: uvicorn backend.services.api_gateway:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  # Tile Service (On-demand Generation)
+  tile-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_tile_service_dev
+    ports:
+      - "8001:8001"  # Expose for local access
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      # AWS S3 Configuration (loaded from .env file)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_REGION_NAME=ap-south-1
+      - AWS_STORAGE_BUCKET_NAME=cadastrals-data
+      # CloudFront Configuration
+      - CLOUDFRONT_DOMAIN=df77x5vpgut6a.cloudfront.net
+      - USE_CLOUDFRONT=True
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./cache:/app/cache
+      - ./backend:/app/backend
+    command: uvicorn backend.services.tile_service:app --host 0.0.0.0 --port 8001 --reload
+    restart: unless-stopped
+
+  # Pre-generation Service
+  pregenerate-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_pregenerate_service_dev
+    ports:
+      - "8002:8002"  # Expose for local access
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      # AWS S3 Configuration (loaded from .env file)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_REGION_NAME=ap-south-1
+      - AWS_STORAGE_BUCKET_NAME=cadastrals-data
+      # CloudFront Configuration
+      - CLOUDFRONT_DOMAIN=df77x5vpgut6a.cloudfront.net
+      - USE_CLOUDFRONT=True
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./cache:/app/cache
+      - ./backend:/app/backend
+    command: uvicorn backend.services.pregenerate_service:app --host 0.0.0.0 --port 8002 --reload
+    restart: unless-stopped
+
+  # Identify API Service
+  identify-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: parcel_identify_service_dev
+    ports:
+      - "8003:8003"  # Expose for local access
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=parcels_db_new
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - SHAPEFILE_PATH=data/vellore/vellore_cad.shp
+      # AWS S3 Configuration (loaded from .env file)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_REGION_NAME=ap-south-1
+      - AWS_STORAGE_BUCKET_NAME=cadastrals-data
+      # CloudFront Configuration
+      - CLOUDFRONT_DOMAIN=df77x5vpgut6a.cloudfront.net
+      - USE_CLOUDFRONT=True
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+      - ./data:/app/data:ro
+    command: uvicorn backend.services.identify_service:app --host 0.0.0.0 --port 8003 --reload
+    restart: unless-stopped
+
+volumes:
+  postgres_data_dev:
+    driver: local
+
+networks:
+  default:
+    name: parcel_network_dev
