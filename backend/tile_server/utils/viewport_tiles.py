@@ -14,7 +14,7 @@ import logging
 from typing import List, Tuple, Optional
 from .tile_utils import tile_xyz_to_bounds, bounds_to_tile_xyz
 from .generate_tile import generate_raster_tile
-from .cache_manager import get_tile_from_cache, save_tile_to_cache
+from .cache_manager import get_tile, save_tile
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +120,16 @@ def generate_tiles_for_viewport(
     logger.info(f"Generating {len(viewport_tiles)} viewport tiles...")
     for z, x, y in viewport_tiles:
         try:
-            # Check cache first
-            cached = get_tile_from_cache(z, x, y, state_code=state_code, district_code=district_code)
-            if cached:
+            # Check S3 only (no local cache)
+            existing_tile = get_tile(z, x, y, state_code=state_code, district_code=district_code)
+            if existing_tile:
                 stats["cached"] += 1
                 continue
             
-            # Generate tile
+            # Generate tile if not found in S3
             tile_data = generate_raster_tile(z, x, y, state_code=state_code, district_code=district_code)
-            save_tile_to_cache(z, x, y, tile_data, state_code=state_code, district_code=district_code)
+            # Save to S3 only
+            save_tile(z, x, y, tile_data, state_code=state_code, district_code=district_code)
             stats["generated"] += 1
         except Exception as e:
             logger.error(f"Error generating viewport tile {z}/{x}/{y}: {e}")
@@ -138,15 +139,16 @@ def generate_tiles_for_viewport(
     logger.info(f"Generating {len(surrounding_tiles)} surrounding tiles...")
     for z, x, y in surrounding_tiles:
         try:
-            # Check cache first
-            cached = get_tile_from_cache(z, x, y, state_code=state_code, district_code=district_code)
-            if cached:
+            # Check S3 only (no local cache)
+            existing_tile = get_tile(z, x, y, state_code=state_code, district_code=district_code)
+            if existing_tile:
                 stats["cached"] += 1
                 continue
             
-            # Generate tile
+            # Generate tile if not found in S3
             tile_data = generate_raster_tile(z, x, y, state_code=state_code, district_code=district_code)
-            save_tile_to_cache(z, x, y, tile_data, state_code=state_code, district_code=district_code)
+            # Save to S3 only
+            save_tile(z, x, y, tile_data, state_code=state_code, district_code=district_code)
             stats["generated"] += 1
         except Exception as e:
             logger.error(f"Error generating surrounding tile {z}/{x}/{y}: {e}")
